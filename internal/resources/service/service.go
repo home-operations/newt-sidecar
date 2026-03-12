@@ -100,6 +100,10 @@ func resolveAllPorts(annotations map[string]string, cfg *config.Config) bool {
 // When the same port number appears with different protocols (e.g. 7777/TCP
 // and 7777/UDP) each combination receives its own entry; the blueprint key
 // includes the protocol to prevent collisions.
+//
+// The display name uses the format "<svcName>-<portName>-<proto>" (all lowercase,
+// no spaces) to avoid redundancy when the port name already contains the service
+// name, and to ensure the name is usable as an identifier.
 func buildAllPortEntries(svc *corev1.Service, svcKey, clusterHostname string, cfg *config.Config) map[string]blueprint.Resource {
 	if len(svc.Spec.Ports) == 0 {
 		slog.Warn("service has no ports, skipping", "service", svcKey)
@@ -116,7 +120,7 @@ func buildAllPortEntries(svc *corev1.Service, svcKey, clusterHostname string, cf
 			portName = strconv.Itoa(int(p.Port))
 		}
 		proto := serviceProtocol(p.Protocol)
-		displayName := fmt.Sprintf("%s %s %s", svc.Name, portName, strings.ToUpper(proto))
+		displayName := fmt.Sprintf("%s-%s-%s", svc.Name, portName, proto)
 		key := blueprint.ServiceToKey(svc.Namespace, svc.Name, strconv.Itoa(int(p.Port)), proto)
 
 		entries[key] = blueprint.BuildServiceResource(blueprint.ServicePort{
