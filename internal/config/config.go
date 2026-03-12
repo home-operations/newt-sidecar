@@ -2,6 +2,7 @@ package config
 
 import "flag"
 
+// Config holds all runtime configuration loaded from CLI flags.
 type Config struct {
 	// HTTPRoute options
 	GatewayName      string
@@ -23,6 +24,7 @@ type Config struct {
 	AutoService   bool
 }
 
+// Load parses CLI flags and returns a populated Config.
 func Load() *Config {
 	cfg := &Config{}
 
@@ -37,15 +39,14 @@ func Load() *Config {
 	flag.StringVar(&cfg.TargetHostname, "target-hostname", "", "Backend gateway hostname (required for HTTPRoute mode)")
 	flag.IntVar(&cfg.TargetPort, "target-port", 443, "Backend gateway port")
 	flag.StringVar(&cfg.TargetMethod, "target-method", "https", "Backend method (http/https/h2c)")
-	flag.StringVar(&cfg.DenyCountries, "deny-countries", "", "Comma-separated country codes to deny (HTTPRoute only)")
+	flag.StringVar(&cfg.DenyCountries, "deny-countries", "", "Comma-separated country codes to deny")
 	flag.BoolVar(&cfg.SSL, "ssl", true, "Enable SSL on HTTP resources")
-	flag.StringVar(&cfg.AnnotationPrefix, "annotation-prefix", "newt-sidecar", "Annotation/label prefix for per-resource overrides")
+	flag.StringVar(&cfg.AnnotationPrefix, "annotation-prefix", "newt-sidecar", "Annotation prefix for per-resource overrides")
 
 	// Service discovery flags
-	flag.BoolVar(&cfg.EnableService, "enable-service", false, "Enable Service resource discovery")
-	flag.BoolVar(&cfg.AutoService, "auto-service", false, "Automatically process all Services (no label required)")
+	flag.BoolVar(&cfg.EnableService, "enable-service", false, "Enable Service discovery (annotation-mode: opt-in via newt-sidecar/enabled: true)")
+	flag.BoolVar(&cfg.AutoService, "auto-service", false, "Enable Service discovery (auto-mode: opt-out via newt-sidecar/enabled: false)")
 
-	flag.CommandLine.Init("", flag.ExitOnError)
 	flag.Parse()
 
 	return cfg
