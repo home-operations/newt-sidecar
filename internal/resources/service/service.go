@@ -50,9 +50,15 @@ func shouldProcess(obj metav1.Object, cfg *config.Config) bool {
 
 // buildEntries builds blueprint entries for a Service.
 //
-// When --all-ports is set every TCP/UDP port of the Service gets its own
-// blueprint entry (TCP/UDP mode only). Otherwise the standard single-port
-// selection logic applies, which also supports HTTP mode via full-domain.
+// all-ports mode is active when either:
+//   - the newt-sidecar/all-ports annotation is set to "true" or "1", or
+//   - the global --all-ports flag is set (and the annotation does not
+//     explicitly disable it with "false" or "0").
+//
+// In all-ports mode every TCP/UDP port gets its own blueprint entry.
+// HTTP mode (full-domain) is not supported in all-ports mode.
+// Otherwise the standard single-port selection logic applies, which also
+// supports HTTP mode via the full-domain annotation.
 func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Resource {
 	svc, ok := obj.(*corev1.Service)
 	if !ok {
@@ -67,18 +73,29 @@ func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Re
 	svcKey := fmt.Sprintf("%s/%s", svc.Namespace, svc.Name)
 	clusterHostname := fmt.Sprintf("%s.%s.svc.cluster.local", svc.Name, svc.Namespace)
 
-	if cfg.AllPorts {
-		return buildAllPortEntries(svc, annotations, cfg, svcKey, clusterHostname)
+	if resolveAllPorts(annotations, cfg) {
+		return buildAllPortEntries(svc, svcKey, clusterHostname, cfg)
 	}
 
 	return buildSinglePortEntry(svc, annotations, cfg, svcKey, clusterHostname)
 }
 
+// resolveAllPorts determines whether all-ports mode should be active.
+//
+// The annotation takes precedence over the global flag:
+//   - annotation "true"/"1"  → all-ports on  (regardless of global flag)
+//   - annotation "false"/"0" → all-ports off (regardless of global flag)
+//   - annotation absent      → fall back to global --all-ports flag
+func resolveAllPorts(annotations map[string]string, cfg *config.Config) bool {
+	if v, ok := annotations[cfg.AnnotationPrefix+"/all-ports"]; ok {
+		return v == "true" || v == "1"
+	}
+	return cfg.AllPorts
+}
+
 // buildAllPortEntries creates one blueprint entry per TCP/UDP port.
-// HTTP mode (full-domain) is not supported in all-ports mode.
-// The protocol is read from the ServicePort spec and can not be overridden
-// per-annotation in this mode.
-func buildAllPortEntries(svc *corev1.Service, annotations map[string]string, cfg *config.Config, svcKey, clusterHostname string) map[string]blueprint.Resource {
+// The protocol is read directly from the ServicePort spec.
+func buildAllPortEntries(svc *corev1.Service, svcKey, clusterHostname string, cfg *config.Config) map[string]blueprint.Resource {
 	if len(svc.Spec.Ports) == 0 {
 		slog.Warn("service has no ports, skipping", "service", svcKey)
 		return nil
@@ -89,18 +106,16 @@ func buildAllPortEntries(svc *corev1.Service, annotations map[string]string, cfg
 	for i := range svc.Spec.Ports {
 		p := &svc.Spec.Ports[i]
 
-		protocol := serviceProtocol(p.Protocol)
-
 		portName := p.Name
 		if portName == "" {
 			portName = strconv.Itoa(int(p.Port))
 		}
 		displayName := fmt.Sprintf("%s %s", svc.Name, portName)
-
 		key := blueprint.ServiceToKey(svc.Namespace, svc.Name, strconv.Itoa(int(p.Port)))
+
 		entries[key] = blueprint.BuildServiceResource(blueprint.ServicePort{
 			Name:           displayName,
-			Protocol:       protocol,
+			Protocol:       serviceProtocol(p.Protocol),
 			ProxyPort:      int(p.Port),
 			TargetPort:     int(p.Port),
 			TargetHostname: clusterHostname,
