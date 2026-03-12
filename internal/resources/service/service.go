@@ -56,6 +56,8 @@ func shouldProcess(obj metav1.Object, cfg *config.Config) bool {
 //     explicitly disable it with "false" or "0").
 //
 // In all-ports mode every TCP/UDP port gets its own blueprint entry.
+// Services that define the same port number for both TCP and UDP each
+// receive their own entry, keyed by namespace-name-port-protocol.
 // HTTP mode (full-domain) is not supported in all-ports mode.
 // Otherwise the standard single-port selection logic applies, which also
 // supports HTTP mode via the full-domain annotation.
@@ -95,6 +97,9 @@ func resolveAllPorts(annotations map[string]string, cfg *config.Config) bool {
 
 // buildAllPortEntries creates one blueprint entry per TCP/UDP port.
 // The protocol is read directly from the ServicePort spec.
+// When the same port number appears with different protocols (e.g. 7777/TCP
+// and 7777/UDP) each combination receives its own entry; the blueprint key
+// includes the protocol to prevent collisions.
 func buildAllPortEntries(svc *corev1.Service, svcKey, clusterHostname string, cfg *config.Config) map[string]blueprint.Resource {
 	if len(svc.Spec.Ports) == 0 {
 		slog.Warn("service has no ports, skipping", "service", svcKey)
@@ -110,12 +115,13 @@ func buildAllPortEntries(svc *corev1.Service, svcKey, clusterHostname string, cf
 		if portName == "" {
 			portName = strconv.Itoa(int(p.Port))
 		}
-		displayName := fmt.Sprintf("%s %s", svc.Name, portName)
-		key := blueprint.ServiceToKey(svc.Namespace, svc.Name, strconv.Itoa(int(p.Port)))
+		proto := serviceProtocol(p.Protocol)
+		displayName := fmt.Sprintf("%s %s %s", svc.Name, portName, strings.ToUpper(proto))
+		key := blueprint.ServiceToKey(svc.Namespace, svc.Name, strconv.Itoa(int(p.Port)), proto)
 
 		entries[key] = blueprint.BuildServiceResource(blueprint.ServicePort{
 			Name:           displayName,
-			Protocol:       serviceProtocol(p.Protocol),
+			Protocol:       proto,
 			ProxyPort:      int(p.Port),
 			TargetPort:     int(p.Port),
 			TargetHostname: clusterHostname,
@@ -137,7 +143,7 @@ func buildSinglePortEntry(svc *corev1.Service, annotations map[string]string, cf
 	if sp.FullDomain != "" {
 		key = blueprint.HostnameToKey(sp.FullDomain)
 	} else {
-		key = blueprint.ServiceToKey(svc.Namespace, svc.Name, strconv.Itoa(sp.ProxyPort))
+		key = blueprint.ServiceToKey(svc.Namespace, svc.Name, strconv.Itoa(sp.ProxyPort), sp.Protocol)
 	}
 
 	return map[string]blueprint.Resource{

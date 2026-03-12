@@ -41,10 +41,12 @@ func HostnameToKey(hostname string) string {
 	return strings.ReplaceAll(hostname, ".", "-")
 }
 
-// ServiceToKey converts a namespace/name/port tuple to a stable resource map key.
-// Example: "default", "postgres", "5432" → "default-postgres-5432"
-func ServiceToKey(namespace, name, port string) string {
-	return fmt.Sprintf("%s-%s-%s", namespace, name, port)
+// ServiceToKey converts a namespace/name/port/protocol tuple to a stable resource map key.
+// The protocol is included to correctly handle Services that expose the same port number
+// for both TCP and UDP (e.g. game servers).
+// Example: "default", "gameserver", "7777", "tcp" → "default-gameserver-7777-tcp"
+func ServiceToKey(namespace, name, port, protocol string) string {
+	return fmt.Sprintf("%s-%s-%s-%s", namespace, name, port, protocol)
 }
 
 // buildDenyRules returns a Rule slice for each country in cfg.DenyCountries.
@@ -171,7 +173,7 @@ func BuildServiceResource(sp ServicePort, cfg *config.Config) Resource {
 			{
 				Site:     cfg.SiteID,
 				Hostname: sp.TargetHostname,
-				Port:     sp.TargetPort,
+				Port:     sp.TargetTarget,
 			},
 		},
 	}
