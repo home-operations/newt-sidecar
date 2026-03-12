@@ -22,6 +22,7 @@ type Config struct {
 	// Service discovery options
 	EnableService bool
 	AutoService   bool
+	AllPorts      bool
 }
 
 // Load parses CLI flags and returns a populated Config.
@@ -46,6 +47,7 @@ func Load() *Config {
 	// Service discovery flags
 	flag.BoolVar(&cfg.EnableService, "enable-service", false, "Enable Service discovery (annotation-mode: opt-in via newt-sidecar/enabled: true)")
 	flag.BoolVar(&cfg.AutoService, "auto-service", false, "Enable Service discovery (auto-mode: opt-out via newt-sidecar/enabled: false)")
+	flag.BoolVar(&cfg.AllPorts, "all-ports", false, "Expose all TCP/UDP ports of a Service as individual blueprint entries")
 
 	flag.Parse()
 
