@@ -4,58 +4,53 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"reflect"
 	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	k8sruntime "k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
-	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/home-operations/newt-sidecar/internal/blueprint"
 	"github.com/home-operations/newt-sidecar/internal/config"
+	"github.com/home-operations/newt-sidecar/internal/resources"
 	"github.com/home-operations/newt-sidecar/internal/state"
 )
 
-var (
-	httprouteGVR = schema.GroupVersionResource{
-		Group:    "gateway.networking.k8s.io",
-		Version:  "v1",
-		Resource: "httproutes",
-	}
-	httprouteType = reflect.TypeOf(gatewayv1.HTTPRoute{})
-)
-
-// Controller watches HTTPRoute resources and updates the blueprint state.
+// Controller is a generic Kubernetes resource watcher that builds blueprint
+// entries via a ResourceDefinition. Modelled after the gatus-sidecar pattern:
+// adding a new resource type only requires a new ResourceDefinition — no new
+// controller code.
 type Controller struct {
-	mu             sync.Mutex
-	routeHostnames map[string][]string // routeKey → []hostnameKeys
-	stateManager   *state.Manager
-	dynamicClient  dynamic.Interface
+	mu sync.Mutex
+	// resourceKeys maps "namespace/name" → []blueprint keys registered for that
+	// object. A single object may produce multiple keys (e.g. one per HTTPRoute
+	// hostname).
+	resourceKeys  map[string][]string
+	definition    *resources.ResourceDefinition
+	stateManager  *state.Manager
+	dynamicClient dynamic.Interface
 }
 
-// New creates a new Controller.
-func New(stateManager *state.Manager, dynamicClient dynamic.Interface) *Controller {
+// New creates a Controller for the given ResourceDefinition.
+func New(definition *resources.ResourceDefinition, stateManager *state.Manager, dynamicClient dynamic.Interface) *Controller {
 	return &Controller{
-		routeHostnames: make(map[string][]string),
-		stateManager:   stateManager,
-		dynamicClient:  dynamicClient,
+		resourceKeys:  make(map[string][]string),
+		definition:    definition,
+		stateManager:  stateManager,
+		dynamicClient: dynamicClient,
 	}
 }
 
 // Run performs the initial list then enters the watch loop.
 func (c *Controller) Run(ctx context.Context, cfg *config.Config) error {
 	if err := c.initialList(ctx, cfg); err != nil {
-		return fmt.Errorf("initial list failed: %w", err)
+		return fmt.Errorf("%s initial list failed: %w", c.definition.GVR.Resource, err)
 	}
 
 	for {
 		if err := c.watchLoop(ctx, cfg); err != nil {
-			slog.Error("watch loop error", "error", err)
+			slog.Error("watch loop error", "resource", c.definition.GVR.Resource, "error", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -66,19 +61,19 @@ func (c *Controller) Run(ctx context.Context, cfg *config.Config) error {
 }
 
 func (c *Controller) initialList(ctx context.Context, cfg *config.Config) error {
-	list, err := c.dynamicClient.Resource(httprouteGVR).Namespace(cfg.Namespace).List(ctx, metav1.ListOptions{})
+	list, err := c.dynamicClient.Resource(c.definition.GVR).Namespace(cfg.Namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return fmt.Errorf("list httproutes: %w", err)
+		return fmt.Errorf("list %s: %w", c.definition.GVR.Resource, err)
 	}
 
 	changed := false
 	for _, item := range list.Items {
-		route, err := convertToHTTPRoute(&item)
+		obj, err := c.definition.ConvertFunc(&item)
 		if err != nil {
-			slog.Error("failed to convert httproute", "name", item.GetName(), "error", err)
+			slog.Error("failed to convert resource", "resource", c.definition.GVR.Resource, "name", item.GetName(), "error", err)
 			continue
 		}
-		if c.processRoute(cfg, route, false) {
+		if c.processObject(cfg, obj, false) {
 			changed = true
 		}
 	}
@@ -91,9 +86,9 @@ func (c *Controller) initialList(ctx context.Context, cfg *config.Config) error 
 }
 
 func (c *Controller) watchLoop(ctx context.Context, cfg *config.Config) error {
-	w, err := c.dynamicClient.Resource(httprouteGVR).Namespace(cfg.Namespace).Watch(ctx, metav1.ListOptions{})
+	w, err := c.dynamicClient.Resource(c.definition.GVR).Namespace(cfg.Namespace).Watch(ctx, metav1.ListOptions{})
 	if err != nil {
-		return fmt.Errorf("watch httproutes: %w", err)
+		return fmt.Errorf("watch %s: %w", c.definition.GVR.Resource, err)
 	}
 	defer w.Stop()
 
@@ -103,7 +98,7 @@ func (c *Controller) watchLoop(ctx context.Context, cfg *config.Config) error {
 			return nil
 		case evt, ok := <-w.ResultChan():
 			if !ok {
-				return fmt.Errorf("watch channel closed")
+				return fmt.Errorf("%s watch channel closed", c.definition.GVR.Resource)
 			}
 			c.handleEvent(cfg, evt)
 		}
@@ -113,81 +108,77 @@ func (c *Controller) watchLoop(ctx context.Context, cfg *config.Config) error {
 func (c *Controller) handleEvent(cfg *config.Config, evt watch.Event) {
 	unstructuredObj, ok := evt.Object.(*unstructured.Unstructured)
 	if !ok {
-		slog.Error("unexpected event object type", "type", fmt.Sprintf("%T", evt.Object))
+		slog.Error("unexpected event object type", "resource", c.definition.GVR.Resource, "type", fmt.Sprintf("%T", evt.Object))
 		return
 	}
 
-	route, err := convertToHTTPRoute(unstructuredObj)
+	obj, err := c.definition.ConvertFunc(unstructuredObj)
 	if err != nil {
-		slog.Error("failed to convert httproute", "error", err)
+		slog.Error("failed to convert resource", "resource", c.definition.GVR.Resource, "error", err)
 		return
 	}
 
-	routeKey := fmt.Sprintf("%s.%s", route.Name, route.Namespace)
+	objKey := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 
 	if evt.Type == watch.Deleted {
-		c.removeRoute(routeKey)
+		c.removeObject(objKey)
 		return
 	}
 
-	c.processRoute(cfg, route, true)
+	c.processObject(cfg, obj, true)
 }
 
-// processRoute processes an HTTPRoute and updates state.
-// Returns true if any change was detected.
-func (c *Controller) processRoute(cfg *config.Config, route *gatewayv1.HTTPRoute, write bool) bool {
-	routeKey := fmt.Sprintf("%s.%s", route.Name, route.Namespace)
-	annotations := route.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
+// processObject processes a single Kubernetes object and updates state.
+// Returns true when any change was detected.
+func (c *Controller) processObject(cfg *config.Config, obj metav1.Object, write bool) bool {
+	objKey := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 
-	// Check if this route is explicitly disabled.
-	if v, ok := annotations[cfg.AnnotationPrefix+"/enabled"]; ok && (v == "false" || v == "0") {
-		c.removeRoute(routeKey)
-		return true
-	}
-
-	// Filter by gateway.
-	if !referencesGateway(route, cfg.GatewayName, cfg.GatewayNamespace) {
-		c.removeRoute(routeKey)
+	if !c.definition.ShouldProcess(obj, cfg) {
+		c.removeObject(objKey)
 		return false
 	}
 
-	// Build new hostname keys for this route.
-	hostnames := getHostnames(route)
-	newHostnameKeys := make([]string, 0, len(hostnames))
-	for _, h := range hostnames {
-		newHostnameKeys = append(newHostnameKeys, blueprint.HostnameToKey(h))
+	entries := c.definition.BuildEntries(obj, cfg)
+	if len(entries) == 0 {
+		c.removeObject(objKey)
+		return false
 	}
 
-	// Swap old hostname keys with new ones.
+	// Compute new key set.
+	newKeys := make([]string, 0, len(entries))
+	for k := range entries {
+		newKeys = append(newKeys, k)
+	}
+
+	// Swap old keys → new keys.
 	c.mu.Lock()
-	oldHostnameKeys := c.routeHostnames[routeKey]
-	c.routeHostnames[routeKey] = newHostnameKeys
+	oldKeys := c.resourceKeys[objKey]
+	c.resourceKeys[objKey] = newKeys
 	c.mu.Unlock()
 
 	changed := false
 
-	// Remove old hostnames no longer present in the route.
-	newSet := make(map[string]bool, len(newHostnameKeys))
-	for _, k := range newHostnameKeys {
+	// Remove keys no longer produced by this object.
+	newSet := make(map[string]bool, len(newKeys))
+	for _, k := range newKeys {
 		newSet[k] = true
 	}
-	for _, oldKey := range oldHostnameKeys {
-		if !newSet[oldKey] {
-			if c.stateManager.Remove(oldKey) {
+	for _, old := range oldKeys {
+		if !newSet[old] {
+			if c.stateManager.Remove(old) {
 				changed = true
 			}
 		}
 	}
 
-	// Add or update current hostnames.
-	for _, hostname := range hostnames {
-		key := blueprint.HostnameToKey(hostname)
-		resource := blueprint.BuildResource(route.Name, hostname, annotations, cfg)
+	// Add or update current entries.
+	for key, resource := range entries {
 		if c.stateManager.AddOrUpdate(key, resource, write) {
-			slog.Info("updated resource in state", "key", key, "route", route.Name)
+			slog.Info("updated resource in state",
+				"resource", c.definition.GVR.Resource,
+				"key", key,
+				"object", objKey,
+			)
 			changed = true
 		}
 	}
@@ -195,51 +186,15 @@ func (c *Controller) processRoute(cfg *config.Config, route *gatewayv1.HTTPRoute
 	return changed
 }
 
-func (c *Controller) removeRoute(routeKey string) {
+func (c *Controller) removeObject(objKey string) {
 	c.mu.Lock()
-	hostnameKeys := c.routeHostnames[routeKey]
-	delete(c.routeHostnames, routeKey)
+	keys := c.resourceKeys[objKey]
+	delete(c.resourceKeys, objKey)
 	c.mu.Unlock()
 
-	for _, key := range hostnameKeys {
+	for _, key := range keys {
 		if removed := c.stateManager.Remove(key); removed {
-			slog.Info("removed resource from state", "key", key)
+			slog.Info("removed resource from state", "resource", c.definition.GVR.Resource, "key", key)
 		}
 	}
-}
-
-// convertToHTTPRoute converts an unstructured object to an HTTPRoute.
-func convertToHTTPRoute(u *unstructured.Unstructured) (*gatewayv1.HTTPRoute, error) {
-	obj := reflect.New(httprouteType).Interface()
-	if err := k8sruntime.DefaultUnstructuredConverter.FromUnstructured(u.Object, obj); err != nil {
-		return nil, fmt.Errorf("failed to convert to HTTPRoute: %w", err)
-	}
-	return obj.(*gatewayv1.HTTPRoute), nil
-}
-
-// getHostnames returns all hostnames from an HTTPRoute as strings.
-func getHostnames(route *gatewayv1.HTTPRoute) []string {
-	hostnames := make([]string, 0, len(route.Spec.Hostnames))
-	for _, h := range route.Spec.Hostnames {
-		hostnames = append(hostnames, string(h))
-	}
-	return hostnames
-}
-
-// referencesGateway checks if the HTTPRoute references the given gateway.
-// Copied from gatus-sidecar's httproute filterFunc pattern.
-func referencesGateway(route *gatewayv1.HTTPRoute, gatewayName, gatewayNamespace string) bool {
-	if gatewayName == "" {
-		return true
-	}
-	for _, parent := range route.Spec.ParentRefs {
-		if parent.Name != gatewayv1.ObjectName(gatewayName) {
-			continue
-		}
-		if gatewayNamespace != "" && parent.Namespace != nil && string(*parent.Namespace) != gatewayNamespace {
-			continue
-		}
-		return true
-	}
-	return false
 }
