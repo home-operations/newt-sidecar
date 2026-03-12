@@ -38,6 +38,7 @@ The sidecar runs alongside newt in the same pod, sharing a volume. It watches HT
 | `--annotation-prefix` | `newt-sidecar` | Annotation prefix for per-resource overrides |
 | `--enable-service` | `false` | Enable Service discovery (annotation-mode: opt-in via `newt-sidecar/enabled: "true"`) |
 | `--auto-service` | `false` | Enable Service discovery (auto-mode: opt-out via `newt-sidecar/enabled: "false"`) |
+| `--all-ports` | `false` | Expose all TCP/UDP ports of a Service as individual blueprint entries (global default, overridable per Service via `newt-sidecar/all-ports` annotation) |
 
 Both `--enable-service` and `--auto-service` activate the Service controller. The difference is the default behaviour: in annotation-mode a Service must explicitly opt in; in auto-mode every Service is processed unless explicitly excluded.
 
@@ -62,13 +63,14 @@ Pangolin opens a raw TCP or UDP port and tunnels directly to the cluster-interna
 | Annotation | Default | Description |
 |------------|---------|-------------|
 | `newt-sidecar/enabled` | — | `"true"` to opt in (annotation-mode); `"false"` to opt out (auto-mode) |
-| `newt-sidecar/port` | auto | Port number or name to expose. Required when the Service has more than one port and none is named `http` |
-| `newt-sidecar/protocol` | `tcp` | Tunnel protocol: `tcp` or `udp` |
-| `newt-sidecar/name` | `<svc> <port>` | Override the resource display name |
+| `newt-sidecar/all-ports` | `--all-ports` flag | `"true"` to expose all ports as individual entries; `"false"` to force single-port mode. Overrides the global `--all-ports` flag |
+| `newt-sidecar/port` | auto | Port number or name to expose (single-port mode only). Required when the Service has more than one port and none is named `http` |
+| `newt-sidecar/protocol` | from spec | Tunnel protocol override: `tcp` or `udp` (single-port mode only). Defaults to the protocol defined in the ServicePort spec |
+| `newt-sidecar/name` | `<svc> <port>` | Override the resource display name (single-port mode only) |
 
 ### HTTP mode
 
-Set `newt-sidecar/full-domain` to switch to HTTP mode. Pangolin exposes the Service at the given public domain over HTTPS. The internal target is the cluster-internal Service DNS name — no Envoy Gateway hop.
+Set `newt-sidecar/full-domain` to switch to HTTP mode. Pangolin exposes the Service at the given public domain over HTTPS. The internal target is the cluster-internal Service DNS name — no Envoy Gateway hop. HTTP mode is not supported in all-ports mode.
 
 | Annotation | Default | Description |
 |------------|---------|-------------|
@@ -81,11 +83,19 @@ Set `newt-sidecar/full-domain` to switch to HTTP mode. Pangolin exposes the Serv
 
 ### Port selection logic
 
+**Single-port mode** (default, or `newt-sidecar/all-ports: "false"`):
+
 When `newt-sidecar/port` is not set the sidecar selects a port automatically:
 
 1. Service has exactly one port → use it
 2. Service has a port named `http` → use it
 3. Otherwise the Service is skipped with a warning
+
+**All-ports mode** (`--all-ports` flag or `newt-sidecar/all-ports: "true"`):
+
+Every port defined in the Service spec is exposed as a separate blueprint entry. The protocol is read from the ServicePort spec (`TCP` → `tcp`, `UDP` → `udp`). The `newt-sidecar/port`, `newt-sidecar/protocol`, and `newt-sidecar/name` annotations are ignored in this mode. HTTP mode (`newt-sidecar/full-domain`) is not supported in all-ports mode.
+
+The per-Service annotation always takes precedence over the global flag, so you can opt individual Services in or out regardless of the global default.
 
 ## Kubernetes deployment
 
@@ -271,4 +281,25 @@ spec:
   ports:
     - name: http
       port: 8080
+```
+
+All-ports TCP/UDP tunnel (e.g. expose every port of a multi-port Service):
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: gameserver
+  namespace: default
+  annotations:
+    newt-sidecar/enabled: "true"
+    newt-sidecar/all-ports: "true"
+spec:
+  ports:
+    - name: tcp-game
+      port: 7777
+      protocol: TCP
+    - name: udp-game
+      port: 7778
+      protocol: UDP
 ```
