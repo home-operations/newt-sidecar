@@ -10,6 +10,8 @@ import (
 
 	"github.com/home-operations/newt-sidecar/internal/config"
 	"github.com/home-operations/newt-sidecar/internal/controller"
+	"github.com/home-operations/newt-sidecar/internal/resources/httproute"
+	"github.com/home-operations/newt-sidecar/internal/resources/service"
 	"github.com/home-operations/newt-sidecar/internal/state"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -40,7 +42,7 @@ func main() {
 
 	// HTTPRoute controller — only started when a gateway is configured.
 	if cfg.GatewayName != "" {
-		ctrl := controller.New(stateManager, dc)
+		ctrl := controller.New(httproute.Definition(), stateManager, dc)
 		go func() {
 			if err := ctrl.Run(ctx, cfg); err != nil {
 				errCh <- fmt.Errorf("httproute controller: %w", err)
@@ -50,9 +52,9 @@ func main() {
 
 	// Service controller — started when --enable-service or --auto-service is set.
 	if cfg.EnableService || cfg.AutoService {
-		svcCtrl := controller.NewServiceController(stateManager, dc)
+		ctrl := controller.New(service.Definition(), stateManager, dc)
 		go func() {
-			if err := svcCtrl.Run(ctx, cfg); err != nil {
+			if err := ctrl.Run(ctx, cfg); err != nil {
 				errCh <- fmt.Errorf("service controller: %w", err)
 			}
 		}()
