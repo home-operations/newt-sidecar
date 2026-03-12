@@ -48,8 +48,11 @@ func shouldProcess(obj metav1.Object, cfg *config.Config) bool {
 	return !(hasEnabled && (enabledVal == "false" || enabledVal == "0"))
 }
 
-// buildEntries resolves the port, determines the mode (HTTP vs TCP/UDP) and
-// returns a single blueprint entry for this Service.
+// buildEntries builds blueprint entries for a Service.
+//
+// When --all-ports is set every TCP/UDP port of the Service gets its own
+// blueprint entry (TCP/UDP mode only). Otherwise the standard single-port
+// selection logic applies, which also supports HTTP mode via full-domain.
 func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Resource {
 	svc, ok := obj.(*corev1.Service)
 	if !ok {
@@ -62,8 +65,55 @@ func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Re
 	}
 
 	svcKey := fmt.Sprintf("%s/%s", svc.Namespace, svc.Name)
+	clusterHostname := fmt.Sprintf("%s.%s.svc.cluster.local", svc.Name, svc.Namespace)
 
-	sp, ok := resolvePort(svc, annotations, cfg.AnnotationPrefix, svcKey, cfg)
+	if cfg.AllPorts {
+		return buildAllPortEntries(svc, annotations, cfg, svcKey, clusterHostname)
+	}
+
+	return buildSinglePortEntry(svc, annotations, cfg, svcKey, clusterHostname)
+}
+
+// buildAllPortEntries creates one blueprint entry per TCP/UDP port.
+// HTTP mode (full-domain) is not supported in all-ports mode.
+// The protocol is read from the ServicePort spec and can not be overridden
+// per-annotation in this mode.
+func buildAllPortEntries(svc *corev1.Service, annotations map[string]string, cfg *config.Config, svcKey, clusterHostname string) map[string]blueprint.Resource {
+	if len(svc.Spec.Ports) == 0 {
+		slog.Warn("service has no ports, skipping", "service", svcKey)
+		return nil
+	}
+
+	entries := make(map[string]blueprint.Resource, len(svc.Spec.Ports))
+
+	for i := range svc.Spec.Ports {
+		p := &svc.Spec.Ports[i]
+
+		protocol := serviceProtocol(p.Protocol)
+
+		portName := p.Name
+		if portName == "" {
+			portName = strconv.Itoa(int(p.Port))
+		}
+		displayName := fmt.Sprintf("%s %s", svc.Name, portName)
+
+		key := blueprint.ServiceToKey(svc.Namespace, svc.Name, strconv.Itoa(int(p.Port)))
+		entries[key] = blueprint.BuildServiceResource(blueprint.ServicePort{
+			Name:           displayName,
+			Protocol:       protocol,
+			ProxyPort:      int(p.Port),
+			TargetPort:     int(p.Port),
+			TargetHostname: clusterHostname,
+		}, cfg)
+	}
+
+	return entries
+}
+
+// buildSinglePortEntry applies the standard port selection logic and supports
+// both TCP/UDP mode and HTTP mode (via full-domain annotation).
+func buildSinglePortEntry(svc *corev1.Service, annotations map[string]string, cfg *config.Config, svcKey, clusterHostname string) map[string]blueprint.Resource {
+	sp, ok := resolvePort(svc, annotations, cfg.AnnotationPrefix, svcKey, clusterHostname, cfg)
 	if !ok {
 		return nil
 	}
@@ -93,9 +143,11 @@ func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Re
 //  2. Service has exactly one port → use it.
 //  3. Service has a port named "http" → use it.
 //  4. Otherwise skip with a warning.
-func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svcKey string, cfg *config.Config) (blueprint.ServicePort, bool) {
-	clusterHostname := fmt.Sprintf("%s.%s.svc.cluster.local", svc.Name, svc.Namespace)
-
+//
+// Protocol (TCP/UDP mode only):
+//
+//	Read from the ServicePort spec. Can be overridden via newt-sidecar/protocol.
+func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svcKey, clusterHostname string, cfg *config.Config) (blueprint.ServicePort, bool) {
 	// Mode detection.
 	fullDomain := strings.TrimSpace(annotations[prefix+"/full-domain"])
 	httpMode := fullDomain != ""
@@ -166,14 +218,15 @@ func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svc
 		}, true
 	}
 
-	// TCP/UDP mode.
-	protocol := "tcp"
+	// TCP/UDP mode: protocol from ServicePort spec, annotation can override.
+	protocol := serviceProtocol(selected.Protocol)
 	if v, ok := annotations[prefix+"/protocol"]; ok {
 		v = strings.ToLower(strings.TrimSpace(v))
-		if v == "udp" {
-			protocol = "udp"
+		if v == "tcp" || v == "udp" {
+			protocol = v
 		}
 	}
+
 	return blueprint.ServicePort{
 		Name:           displayName,
 		Protocol:       protocol,
@@ -181,4 +234,15 @@ func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svc
 		TargetPort:     int(selected.Port),
 		TargetHostname: clusterHostname,
 	}, true
+}
+
+// serviceProtocol converts a corev1.Protocol to the lowercase string used in
+// the Pangolin blueprint. Defaults to "tcp" for unknown/unset protocols.
+func serviceProtocol(p corev1.Protocol) string {
+	switch p {
+	case corev1.ProtocolUDP:
+		return "udp"
+	default:
+		return "tcp"
+	}
 }
