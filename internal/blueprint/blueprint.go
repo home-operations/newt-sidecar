@@ -173,7 +173,7 @@ func BuildServiceResource(sp ServicePort, cfg *config.Config) Resource {
 			{
 				Site:     cfg.SiteID,
 				Hostname: sp.TargetHostname,
-				Port:     sp.TargetTarget,
+				Port:     sp.TargetPort,
 			},
 		},
 	}
