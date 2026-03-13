@@ -278,37 +278,69 @@ func TestBuildEntries_HTTPMode_SSO_Enabled(t *testing.T) {
 	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), baseCfg)
 	r := entries[blueprint.HostnameToKey("app.example.com")]
 	if r.Auth == nil {
-		t.Fatal("Auth should not be nil when newt-sidecar/auth-sso: true")
+		t.Fatal("auth should not be nil when auth-sso=true")
 	}
 	if !r.Auth.SSOEnabled {
-		t.Error("SSOEnabled should be true")
+		t.Error("sso-enabled should be true")
 	}
 }
 
-func TestBuildEntries_HTTPMode_SSO_WithRolesAndIDP(t *testing.T) {
+func TestBuildEntries_HTTPMode_SSO_AllFields(t *testing.T) {
 	annotations := map[string]string{
-		"newt-sidecar/full-domain":    "app.example.com",
-		"newt-sidecar/auth-sso":       "true",
-		"newt-sidecar/auth-sso-roles": "Member",
-		"newt-sidecar/auth-sso-idp":   "3",
+		"newt-sidecar/full-domain":     "app.example.com",
+		"newt-sidecar/auth-sso":        "true",
+		"newt-sidecar/auth-sso-roles":  "Member,Developer",
+		"newt-sidecar/auth-sso-users":  "alice@example.com",
+		"newt-sidecar/auth-sso-idp":    "2",
 	}
 	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), baseCfg)
 	r := entries[blueprint.HostnameToKey("app.example.com")]
 	if r.Auth == nil {
-		t.Fatal("Auth should not be nil")
+		t.Fatal("auth should not be nil")
+	}
+	if len(r.Auth.SSORoles) != 2 {
+		t.Errorf("sso-roles = %v, want 2 entries", r.Auth.SSORoles)
+	}
+	if len(r.Auth.SSOUsers) != 1 || r.Auth.SSOUsers[0] != "alice@example.com" {
+		t.Errorf("sso-users = %v, want [alice@example.com]", r.Auth.SSOUsers)
+	}
+	if r.Auth.AutoLoginIDP != 2 {
+		t.Errorf("auto-login-idp = %d, want 2", r.Auth.AutoLoginIDP)
+	}
+}
+
+func TestBuildEntries_HTTPMode_SSO_GlobalDefault(t *testing.T) {
+	cfg := *baseCfg
+	cfg.AuthSSORoles = "Member"
+	cfg.AuthSSOIDP = 1
+	annotations := map[string]string{
+		"newt-sidecar/full-domain": "app.example.com",
+		"newt-sidecar/auth-sso":   "true",
+	}
+	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), &cfg)
+	r := entries[blueprint.HostnameToKey("app.example.com")]
+	if r.Auth == nil {
+		t.Fatal("auth should not be nil")
 	}
 	if len(r.Auth.SSORoles) != 1 || r.Auth.SSORoles[0] != "Member" {
-		t.Errorf("SSORoles = %v, want [Member]", r.Auth.SSORoles)
+		t.Errorf("sso-roles = %v, want [Member] from global default", r.Auth.SSORoles)
 	}
-	if r.Auth.AutoLoginIDP != 3 {
-		t.Errorf("AutoLoginIDP = %d, want 3", r.Auth.AutoLoginIDP)
+	if r.Auth.AutoLoginIDP != 1 {
+		t.Errorf("auto-login-idp = %d, want 1 from global default", r.Auth.AutoLoginIDP)
 	}
 }
 
 func TestBuildEntries_TCPMode_NoAuth(t *testing.T) {
-	entries := buildEntries(svc("game", []corev1.ServicePort{port("game", 7777, corev1.ProtocolTCP)}, nil), baseCfg)
-	key := blueprint.ServiceToKey("default", "game", "7777", "tcp")
-	r := entries[key]
+	// SSO annotation set but resource is TCP: auth must be absent.
+	annotations := map[string]string{
+		"newt-sidecar/auth-sso": "true",
+	}
+	entries := buildEntries(svc("db", []corev1.ServicePort{port("postgres", 5432, corev1.ProtocolTCP)}, annotations), baseCfg)
+	key := blueprint.ServiceToKey("default", "db", "5432", "tcp")
+	r, ok := entries[key]
+	if !ok {
+		t.Fatalf("expected TCP entry at key %q", key)
+	}
 	if r.Auth != nil {
 		t.Error("auth must be nil for TCP resources")
 	}

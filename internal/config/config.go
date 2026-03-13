@@ -55,7 +55,8 @@ func Load() *Config {
 	flag.BoolVar(&cfg.AllPorts, "all-ports", false, "Expose all TCP/UDP ports of a Service as individual blueprint entries")
 
 	// SSO auth flags (cluster-wide defaults; per-resource annotation always wins).
-	// There is deliberately no --auth-sso flag: SSO is enabled per resource via annotation.
+	// There is deliberately no --auth-sso flag: SSO must be enabled explicitly
+	// per resource via the newt-sidecar/auth-sso annotation.
 	flag.StringVar(&cfg.AuthSSORoles, "auth-sso-roles", "", "Default comma-separated Pangolin roles for SSO-enabled resources (empty = none)")
 	flag.StringVar(&cfg.AuthSSOUsers, "auth-sso-users", "", "Default comma-separated user e-mails for SSO-enabled resources (empty = none)")
 	flag.IntVar(&cfg.AuthSSOIDP, "auth-sso-idp", 0, "Default Pangolin IdP ID for auto-login-idp (0 = not set)")

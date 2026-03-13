@@ -23,8 +23,7 @@ type Resource struct {
 	Targets       []Target `yaml:"targets"`
 }
 
-// Auth maps to the Pangolin blueprint auth block for SSO.
-// Only SSO fields are supported; pincode/password/basic-auth are omitted.
+// Auth maps to the Pangolin blueprint auth block (SSO only).
 type Auth struct {
 	SSOEnabled   bool     `yaml:"sso-enabled"`
 	SSORoles     []string `yaml:"sso-roles,omitempty"`
@@ -95,8 +94,9 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// buildAuth returns an Auth block when newt-sidecar/auth-sso: "true" is set.
-// Returns nil when SSO is not enabled. Auth is only valid for HTTP resources.
+// buildAuth constructs an Auth block from annotations and global config defaults.
+// Returns nil when the newt-sidecar/auth-sso annotation is absent or not "true"/"1".
+// Auth is only valid for HTTP resources; callers must not invoke this for TCP/UDP.
 func buildAuth(annotations map[string]string, cfg *config.Config) *Auth {
 	prefix := cfg.AnnotationPrefix
 
@@ -168,36 +168,49 @@ func BuildResource(routeName, hostname string, annotations map[string]string, cf
 
 // ServicePort holds the resolved information for a single Service port.
 type ServicePort struct {
-	Name           string
-	Protocol       string
-	ProxyPort      int
-	TargetPort     int
+	// Name is the display name in the Pangolin blueprint.
+	Name string
+
+	// Protocol is "tcp" or "udp". Ignored in HTTP mode.
+	Protocol string
+	// ProxyPort is the Pangolin-side port (TCP/UDP mode only).
+	ProxyPort int
+	// TargetPort is the port on the backend Service.
+	TargetPort int
+	// TargetHostname is the cluster-internal DNS name of the Service.
 	TargetHostname string
-	FullDomain     string
-	Method         string
-	SSL            bool
-	// Annotations is passed through for HTTP mode to resolve the auth block.
-	// Must be nil for TCP/UDP resources (auth is not valid on non-HTTP resources).
-	Annotations map[string]string
+
+	// FullDomain is the public domain Pangolin exposes (e.g. "app.example.com").
+	// A non-empty value switches BuildServiceResource into HTTP mode.
+	FullDomain string
+	// Method is the internal protocol used to reach the Service (http|https|h2c).
+	Method string
+	// SSL controls whether Pangolin enables SSL on the resource.
+	SSL bool
+	// Auth is the optional SSO auth block. Only valid in HTTP mode.
+	Auth *Auth
 }
 
 // BuildServiceResource creates a blueprint Resource for a Service.
-// HTTP mode (sp.FullDomain set): exposes at the given domain, applies deny-country
-// rules and optional SSO auth block.
-// TCP/UDP mode (sp.FullDomain empty): raw tunnel, no rules, no auth.
+//
+// When sp.FullDomain is set (HTTP mode), Pangolin exposes the service at the
+// given domain over HTTPS. tls-server-name is always set to the full-domain.
+// Deny-country rules from cfg.DenyCountries are applied, identical to HTTPRoute
+// resources.
+//
+// When sp.FullDomain is empty (TCP/UDP mode), Pangolin opens a raw TCP or UDP
+// port tunnelled directly to the cluster-internal Service DNS name. Rules,
+// tls-server-name, and auth are not applicable and are omitted.
 func BuildServiceResource(sp ServicePort, cfg *config.Config) Resource {
 	if sp.FullDomain != "" {
-		annotations := sp.Annotations
-		if annotations == nil {
-			annotations = map[string]string{}
-		}
+		// HTTP mode: direct Service, no gateway.
 		return Resource{
 			Name:          sp.Name,
 			Protocol:      "http",
 			SSL:           sp.SSL,
 			FullDomain:    sp.FullDomain,
 			TLSServerName: sp.FullDomain,
-			Auth:          buildAuth(annotations, cfg),
+			Auth:          sp.Auth,
 			Rules:         buildDenyRules(cfg),
 			Targets: []Target{
 				{
@@ -210,6 +223,7 @@ func BuildServiceResource(sp ServicePort, cfg *config.Config) Resource {
 		}
 	}
 
+	// TCP/UDP mode: raw tunnel. No rules, no tls-server-name, no auth.
 	return Resource{
 		Name:      sp.Name,
 		Protocol:  sp.Protocol,

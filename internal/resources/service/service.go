@@ -83,13 +83,13 @@ func buildAllPortEntries(svc *corev1.Service, svcKey, clusterHostname string, cf
 		displayName := fmt.Sprintf("%s-%s", svc.Name, portName)
 		key := blueprint.ServiceToKey(svc.Namespace, svc.Name, strconv.Itoa(int(p.Port)), proto)
 
+		// Auth is not supported in all-ports mode (TCP/UDP only).
 		entries[key] = blueprint.BuildServiceResource(blueprint.ServicePort{
 			Name:           displayName,
 			Protocol:       proto,
 			ProxyPort:      int(p.Port),
 			TargetPort:     int(p.Port),
 			TargetHostname: clusterHostname,
-			// Annotations intentionally omitted: auth is not valid for TCP/UDP resources.
 		}, cfg)
 	}
 
@@ -182,7 +182,7 @@ func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svc
 			SSL:            ssl,
 			TargetPort:     int(selected.Port),
 			TargetHostname: clusterHostname,
-			Annotations:    annotations,
+			Auth:           buildAuth(annotations, cfg),
 		}, true
 	}
 
@@ -194,13 +194,13 @@ func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svc
 		}
 	}
 
+	// Auth is not valid for TCP/UDP resources.
 	return blueprint.ServicePort{
 		Name:           displayName,
 		Protocol:       protocol,
 		ProxyPort:      int(selected.Port),
 		TargetPort:     int(selected.Port),
 		TargetHostname: clusterHostname,
-		// Annotations intentionally omitted: auth is not valid for TCP/UDP resources.
 	}, true
 }
 
@@ -211,4 +211,55 @@ func serviceProtocol(p corev1.Protocol) string {
 	default:
 		return "tcp"
 	}
+}
+
+// buildAuth resolves SSO auth from annotations with global config as fallback.
+// Returns nil when auth-sso annotation is absent or not "true"/"1".
+func buildAuth(annotations map[string]string, cfg *config.Config) *blueprint.Auth {
+	prefix := cfg.AnnotationPrefix
+
+	v, ok := annotations[prefix+"/auth-sso"]
+	if !ok || (v != "true" && v != "1") {
+		return nil
+	}
+
+	rolesRaw := cfg.AuthSSORoles
+	if av, aok := annotations[prefix+"/auth-sso-roles"]; aok {
+		rolesRaw = av
+	}
+
+	usersRaw := cfg.AuthSSOUsers
+	if av, aok := annotations[prefix+"/auth-sso-users"]; aok {
+		usersRaw = av
+	}
+
+	idp := cfg.AuthSSOIDP
+	if av, aok := annotations[prefix+"/auth-sso-idp"]; aok {
+		var parsed int
+		if _, err := fmt.Sscanf(av, "%d", &parsed); err == nil && parsed > 0 {
+			idp = parsed
+		}
+	}
+
+	return &blueprint.Auth{
+		SSOEnabled:   true,
+		SSORoles:     splitCSV(rolesRaw),
+		SSOUsers:     splitCSV(usersRaw),
+		AutoLoginIDP: idp,
+	}
+}
+
+// splitCSV splits a comma-separated string into a trimmed, non-empty slice.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, v := range strings.Split(s, ",") {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
