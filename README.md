@@ -57,13 +57,13 @@ Add these to an HTTPRoute to override per-resource behaviour:
 | `newt-sidecar/name: "Custom Name"` | Override the resource display name |
 | `newt-sidecar/ssl: "false"` | Disable SSL for this resource |
 | `newt-sidecar/auth-sso: "true"` | Enable SSO authentication |
-| `newt-sidecar/auth-sso-roles: "Member,Developer"` | Comma-separated Pangolin roles allowed (overrides `--auth-sso-roles`) |
-| `newt-sidecar/auth-sso-users: "user@example.com"` | Comma-separated user e-mails allowed (overrides `--auth-sso-users`) |
-| `newt-sidecar/auth-sso-idp: "1"` | Pangolin IdP ID for `auto-login-idp` — skips the Pangolin login page and redirects directly to the IdP (overrides `--auth-sso-idp`) |
+| `newt-sidecar/auth-sso-roles: "Member,Developer"` | Comma-separated Pangolin roles (overrides `--auth-sso-roles`) |
+| `newt-sidecar/auth-sso-users: "user@example.com"` | Comma-separated user e-mails (overrides `--auth-sso-users`) |
+| `newt-sidecar/auth-sso-idp: "1"` | Pangolin IdP ID for `auto-login-idp` — redirects directly to the IdP (overrides `--auth-sso-idp`) |
 
 ### Finding the IdP ID
 
-The `auto-login-idp` value is the internal numeric ID Pangolin assigns to each configured Identity Provider. You can find it in two ways:
+The `auto-login-idp` value is the internal numeric ID Pangolin assigns to each configured Identity Provider:
 
 1. **Pangolin UI** — navigate to *Server Admin → Identity Providers*, click an IdP to edit it, and read the number from the URL: `.../admin/idp/**1**/general`
 2. **Pangolin API** — `GET /api/v1/idp` returns `idpId`, `name`, and `type` for every configured IdP
@@ -79,14 +79,14 @@ Pangolin opens a raw TCP or UDP port and tunnels directly to the cluster-interna
 | Annotation | Default | Description |
 |------------|---------|-------------|
 | `newt-sidecar/enabled` | — | `"true"` to opt in (annotation-mode); `"false"` to opt out (auto-mode) |
-| `newt-sidecar/all-ports` | `--all-ports` flag | `"true"` to expose all ports as individual entries; `"false"` to force single-port mode. Overrides the global `--all-ports` flag |
-| `newt-sidecar/port` | auto | Port number or name to expose (single-port mode only). Required when the Service has more than one port and none is named `http` |
-| `newt-sidecar/protocol` | from spec | Tunnel protocol override: `tcp` or `udp` (single-port mode only). Defaults to the protocol defined in the ServicePort spec |
+| `newt-sidecar/all-ports` | `--all-ports` flag | `"true"` to expose all ports as individual entries; `"false"` to force single-port mode |
+| `newt-sidecar/port` | auto | Port number or name to expose (single-port mode only) |
+| `newt-sidecar/protocol` | from spec | Tunnel protocol override: `tcp` or `udp` (single-port mode only) |
 | `newt-sidecar/name` | `<svc> <port>` | Override the resource display name (single-port mode only) |
 
 ### HTTP mode
 
-Set `newt-sidecar/full-domain` to switch to HTTP mode. Pangolin exposes the Service at the given public domain over HTTPS. The internal target is the cluster-internal Service DNS name — no Envoy Gateway hop. HTTP mode is not supported in all-ports mode.
+Set `newt-sidecar/full-domain` to switch to HTTP mode. HTTP mode is not supported in all-ports mode.
 
 | Annotation | Default | Description |
 |------------|---------|-------------|
@@ -105,17 +105,13 @@ Set `newt-sidecar/full-domain` to switch to HTTP mode. Pangolin exposes the Serv
 
 **Single-port mode** (default, or `newt-sidecar/all-ports: "false"`):
 
-When `newt-sidecar/port` is not set the sidecar selects a port automatically:
-
 1. Service has exactly one port → use it
 2. Service has a port named `http` → use it
 3. Otherwise the Service is skipped with a warning
 
 **All-ports mode** (`--all-ports` flag or `newt-sidecar/all-ports: "true"`):
 
-Every port defined in the Service spec is exposed as a separate blueprint entry. The protocol is read from the ServicePort spec (`TCP` → `tcp`, `UDP` → `udp`). The `newt-sidecar/port`, `newt-sidecar/protocol`, and `newt-sidecar/name` annotations are ignored in this mode. HTTP mode (`newt-sidecar/full-domain`) is not supported in all-ports mode.
-
-The per-Service annotation always takes precedence over the global flag, so you can opt individual Services in or out regardless of the global default.
+Every port defined in the Service spec is exposed as a separate blueprint entry. The `newt-sidecar/port`, `newt-sidecar/protocol`, and `newt-sidecar/name` annotations are ignored in this mode. HTTP mode (`newt-sidecar/full-domain`) is not supported in all-ports mode.
 
 ## Kubernetes deployment
 
@@ -232,7 +228,7 @@ spec:
 
 ### HelmRelease (HTTPRoute + Service discovery)
 
-Add `--enable-service` (or `--auto-service`) to the sidecar args and extend the ClusterRole to include Services:
+Add `--enable-service` (or `--auto-service`) to the sidecar args and extend the ClusterRole:
 
 ```yaml
 args:
@@ -285,25 +281,7 @@ spec:
       port: 5432
 ```
 
-HTTP tunnel (direct Service, no gateway hop):
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: myapp
-  namespace: default
-  annotations:
-    newt-sidecar/enabled: "true"
-    newt-sidecar/full-domain: "myapp.example.com"
-    newt-sidecar/name: "My App"
-spec:
-  ports:
-    - name: http
-      port: 8080
-```
-
-HTTP tunnel with SSO (auto-login to IdP 1, role `Member` required):
+HTTP tunnel with SSO (direct Service, auto-login to IdP 1):
 
 ```yaml
 apiVersion: v1
@@ -323,7 +301,7 @@ spec:
       port: 8080
 ```
 
-All-ports TCP/UDP tunnel (e.g. expose every port of a multi-port Service):
+All-ports TCP/UDP tunnel:
 
 ```yaml
 apiVersion: v1

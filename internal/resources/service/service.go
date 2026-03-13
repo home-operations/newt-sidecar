@@ -89,7 +89,7 @@ func buildAllPortEntries(svc *corev1.Service, svcKey, clusterHostname string, cf
 			ProxyPort:      int(p.Port),
 			TargetPort:     int(p.Port),
 			TargetHostname: clusterHostname,
-			// Auth is not supported in all-ports mode (TCP/UDP only).
+			// Annotations intentionally omitted: auth is not valid for TCP/UDP resources.
 		}, cfg)
 	}
 

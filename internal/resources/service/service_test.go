@@ -131,7 +131,6 @@ func TestBuildEntries_UDPPort(t *testing.T) {
 }
 
 func TestBuildEntries_ProtocolAnnotationOverride(t *testing.T) {
-	// Service spec says TCP but annotation forces UDP.
 	annotations := map[string]string{"newt-sidecar/protocol": "udp"}
 	entries := buildEntries(svc("app", []corev1.ServicePort{port("data", 5000, corev1.ProtocolTCP)}, annotations), baseCfg)
 	key := blueprint.ServiceToKey("default", "app", "5000", "udp")
@@ -176,17 +175,14 @@ func TestBuildEntries_AllPorts_Annotation_DisablesGlobalFlag(t *testing.T) {
 		port("http", 8080, corev1.ProtocolTCP),
 		port("grpc", 9090, corev1.ProtocolTCP),
 	}
-	// Annotation explicitly disables all-ports even though flag is true.
 	annotations := map[string]string{"newt-sidecar/all-ports": "false"}
 	entries := buildEntries(svc("app", ports, annotations), &cfg)
-	// Falls back to single-port selection: picks "http" port.
 	if len(entries) != 1 {
 		t.Errorf("expected 1 entry when all-ports annotation=false overrides flag, got %d", len(entries))
 	}
 }
 
 func TestBuildEntries_AllPorts_TCPAndUDP_SamePortNumber(t *testing.T) {
-	// Game server: 7777/TCP and 7777/UDP — must produce two separate entries.
 	cfg := *baseCfg
 	cfg.AllPorts = true
 	ports := []corev1.ServicePort{
@@ -203,7 +199,7 @@ func TestBuildEntries_AllPorts_UnnamedPort_UsesNumber(t *testing.T) {
 	cfg := *baseCfg
 	cfg.AllPorts = true
 	ports := []corev1.ServicePort{
-		{Port: 8080, Protocol: corev1.ProtocolTCP}, // no name
+		{Port: 8080, Protocol: corev1.ProtocolTCP},
 	}
 	entries := buildEntries(svc("app", ports, nil), &cfg)
 	if len(entries) != 1 {
@@ -223,7 +219,6 @@ func TestBuildEntries_HTTPMode_FullDomain(t *testing.T) {
 		"newt-sidecar/full-domain": "app.example.com",
 	}
 	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), baseCfg)
-	// Key must be HostnameToKey, not ServiceToKey.
 	key := blueprint.HostnameToKey("app.example.com")
 	r, ok := entries[key]
 	if !ok {
@@ -270,6 +265,52 @@ func TestBuildEntries_NameAnnotationOverride(t *testing.T) {
 		if r.Name != "My App" {
 			t.Errorf("name = %q, want %q", r.Name, "My App")
 		}
+	}
+}
+
+// --- SSO auth ---
+
+func TestBuildEntries_HTTPMode_SSO_Enabled(t *testing.T) {
+	annotations := map[string]string{
+		"newt-sidecar/full-domain": "app.example.com",
+		"newt-sidecar/auth-sso":   "true",
+	}
+	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), baseCfg)
+	r := entries[blueprint.HostnameToKey("app.example.com")]
+	if r.Auth == nil {
+		t.Fatal("Auth should not be nil when newt-sidecar/auth-sso: true")
+	}
+	if !r.Auth.SSOEnabled {
+		t.Error("SSOEnabled should be true")
+	}
+}
+
+func TestBuildEntries_HTTPMode_SSO_WithRolesAndIDP(t *testing.T) {
+	annotations := map[string]string{
+		"newt-sidecar/full-domain":    "app.example.com",
+		"newt-sidecar/auth-sso":       "true",
+		"newt-sidecar/auth-sso-roles": "Member",
+		"newt-sidecar/auth-sso-idp":   "3",
+	}
+	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), baseCfg)
+	r := entries[blueprint.HostnameToKey("app.example.com")]
+	if r.Auth == nil {
+		t.Fatal("Auth should not be nil")
+	}
+	if len(r.Auth.SSORoles) != 1 || r.Auth.SSORoles[0] != "Member" {
+		t.Errorf("SSORoles = %v, want [Member]", r.Auth.SSORoles)
+	}
+	if r.Auth.AutoLoginIDP != 3 {
+		t.Errorf("AutoLoginIDP = %d, want 3", r.Auth.AutoLoginIDP)
+	}
+}
+
+func TestBuildEntries_TCPMode_NoAuth(t *testing.T) {
+	entries := buildEntries(svc("game", []corev1.ServicePort{port("game", 7777, corev1.ProtocolTCP)}, nil), baseCfg)
+	key := blueprint.ServiceToKey("default", "game", "7777", "tcp")
+	r := entries[key]
+	if r.Auth != nil {
+		t.Error("auth must be nil for TCP resources")
 	}
 }
 
