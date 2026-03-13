@@ -36,7 +36,7 @@ type Target struct {
 }
 
 // HostnameToKey converts a hostname to a resource map key.
-// Example: "home.example.com" → "home-example-com"
+// Example: "home.example.com" -> "home-example-com"
 func HostnameToKey(hostname string) string {
 	return strings.ReplaceAll(hostname, ".", "-")
 }
@@ -44,7 +44,7 @@ func HostnameToKey(hostname string) string {
 // ServiceToKey converts a namespace/name/port/protocol tuple to a stable resource map key.
 // The protocol is included to correctly handle Services that expose the same port number
 // for both TCP and UDP (e.g. game servers).
-// Example: "default", "gameserver", "7777", "tcp" → "default-gameserver-7777-tcp"
+// Example: "default", "gameserver", "7777", "tcp" -> "default-gameserver-7777-tcp"
 func ServiceToKey(namespace, name, port, protocol string) string {
 	return fmt.Sprintf("%s-%s-%s-%s", namespace, name, port, protocol)
 }
@@ -105,8 +105,6 @@ type ServicePort struct {
 	// Name is the display name in the Pangolin blueprint.
 	Name string
 
-	// --- TCP/UDP mode ---
-
 	// Protocol is "tcp" or "udp". Ignored in HTTP mode.
 	Protocol string
 	// ProxyPort is the Pangolin-side port (TCP/UDP mode only).
@@ -115,8 +113,6 @@ type ServicePort struct {
 	TargetPort int
 	// TargetHostname is the cluster-internal DNS name of the Service.
 	TargetHostname string
-
-	// --- HTTP mode (set when FullDomain is non-empty) ---
 
 	// FullDomain is the public domain Pangolin exposes (e.g. "app.example.com").
 	// A non-empty value switches BuildServiceResource into HTTP mode.
@@ -129,19 +125,14 @@ type ServicePort struct {
 
 // BuildServiceResource creates a blueprint Resource for a Service.
 //
-// HTTP mode — when sp.FullDomain is set:
+// When sp.FullDomain is set (HTTP mode), Pangolin exposes the service at the
+// given domain over HTTPS. tls-server-name is always set to the full-domain.
+// Deny-country rules from cfg.DenyCountries are applied, identical to HTTPRoute
+// resources.
 //
-//	Pangolin exposes the service at the given domain over HTTPS.
-//	tls-server-name is always set to the full-domain — Pangolin needs
-//	it for every HTTP resource regardless of the internal method.
-//	deny-country rules from cfg.DenyCountries are applied, identical
-//	to HTTPRoute resources.
-//
-// TCP/UDP mode — when sp.FullDomain is empty:
-//
-//	Pangolin opens a raw TCP or UDP port tunnelled directly to
-//	the cluster-internal Service DNS name. Rules and tls-server-name
-//	are not applicable for TCP/UDP and are therefore omitted.
+// When sp.FullDomain is empty (TCP/UDP mode), Pangolin opens a raw TCP or UDP
+// port tunnelled directly to the cluster-internal Service DNS name. Rules and
+// tls-server-name are not applicable and are omitted.
 func BuildServiceResource(sp ServicePort, cfg *config.Config) Resource {
 	if sp.FullDomain != "" {
 		// HTTP mode: direct Service, no gateway.

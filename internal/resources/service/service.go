@@ -50,17 +50,12 @@ func shouldProcess(obj metav1.Object, cfg *config.Config) bool {
 
 // buildEntries builds blueprint entries for a Service.
 //
-// all-ports mode is active when either:
-//   - the newt-sidecar/all-ports annotation is set to "true" or "1", or
-//   - the global --all-ports flag is set (and the annotation does not
-//     explicitly disable it with "false" or "0").
-//
-// In all-ports mode every TCP/UDP port gets its own blueprint entry.
-// Services that define the same port number for both TCP and UDP each
-// receive their own entry, keyed by namespace-name-port-protocol.
+// All-ports mode is active when the newt-sidecar/all-ports annotation is
+// "true"/"1", or when the global --all-ports flag is set and the annotation
+// does not explicitly disable it. In all-ports mode every TCP/UDP port gets
+// its own blueprint entry; Services with the same port number for both TCP
+// and UDP receive separate entries keyed by namespace-name-port-protocol.
 // HTTP mode (full-domain) is not supported in all-ports mode.
-// Otherwise the standard single-port selection logic applies, which also
-// supports HTTP mode via the full-domain annotation.
 func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Resource {
 	svc, ok := obj.(*corev1.Service)
 	if !ok {
@@ -83,11 +78,8 @@ func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Re
 }
 
 // resolveAllPorts determines whether all-ports mode should be active.
-//
 // The annotation takes precedence over the global flag:
-//   - annotation "true"/"1"  → all-ports on  (regardless of global flag)
-//   - annotation "false"/"0" → all-ports off (regardless of global flag)
-//   - annotation absent      → fall back to global --all-ports flag
+// "true"/"1" -> on, "false"/"0" -> off, absent -> use --all-ports flag.
 func resolveAllPorts(annotations map[string]string, cfg *config.Config) bool {
 	if v, ok := annotations[cfg.AnnotationPrefix+"/all-ports"]; ok {
 		return v == "true" || v == "1"
@@ -96,14 +88,11 @@ func resolveAllPorts(annotations map[string]string, cfg *config.Config) bool {
 }
 
 // buildAllPortEntries creates one blueprint entry per TCP/UDP port.
-// The protocol is read directly from the ServicePort spec.
-// When the same port number appears with different protocols (e.g. 7777/TCP
-// and 7777/UDP) each combination receives its own entry; the blueprint key
-// includes the protocol to prevent collisions.
-//
-// The display name uses the format "<svcName>-<portName>" without spaces.
-// Port names are unique within a Service, so no protocol suffix is needed.
-// If a port has no name, the port number is used instead.
+// The protocol is read from the ServicePort spec. When the same port number
+// appears with different protocols (e.g. 7777/TCP and 7777/UDP) each
+// combination gets its own entry; the blueprint key includes the protocol
+// to prevent collisions. The display name is "<svcName>-<portName>" without
+// spaces; port names are unique within a Service so no protocol suffix is needed.
 func buildAllPortEntries(svc *corev1.Service, svcKey, clusterHostname string, cfg *config.Config) map[string]blueprint.Resource {
 	if len(svc.Spec.Ports) == 0 {
 		slog.Warn("service has no ports, skipping", "service", svcKey)
@@ -157,21 +146,14 @@ func buildSinglePortEntry(svc *corev1.Service, annotations map[string]string, cf
 
 // resolvePort selects the Service port to expose and builds a ServicePort.
 //
-// Mode selection:
+// Mode: newt-sidecar/full-domain set -> HTTP mode, absent -> TCP/UDP mode.
 //
-//	newt-sidecar/full-domain set → HTTP mode.
-//	newt-sidecar/full-domain absent → TCP/UDP mode.
+// Port selection: (1) newt-sidecar/port annotation matched by number or name,
+// (2) exactly one port -> use it, (3) port named "http" -> use it,
+// (4) otherwise skip with a warning.
 //
-// Port selection:
-//
-//  1. newt-sidecar/port annotation → match by number or name.
-//  2. Service has exactly one port → use it.
-//  3. Service has a port named "http" → use it.
-//  4. Otherwise skip with a warning.
-//
-// Protocol (TCP/UDP mode only):
-//
-//	Read from the ServicePort spec. Can be overridden via newt-sidecar/protocol.
+// Protocol (TCP/UDP mode): read from ServicePort spec, overridable via
+// newt-sidecar/protocol annotation.
 func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svcKey, clusterHostname string, cfg *config.Config) (blueprint.ServicePort, bool) {
 	// Mode detection.
 	fullDomain := strings.TrimSpace(annotations[prefix+"/full-domain"])
