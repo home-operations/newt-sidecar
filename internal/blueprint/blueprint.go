@@ -18,8 +18,19 @@ type Resource struct {
 	FullDomain    string   `yaml:"full-domain,omitempty"`
 	TLSServerName string   `yaml:"tls-server-name,omitempty"`
 	ProxyPort     int      `yaml:"proxy-port,omitempty"`
+	Auth          *Auth    `yaml:"auth,omitempty"`
 	Rules         []Rule   `yaml:"rules,omitempty"`
 	Targets       []Target `yaml:"targets"`
+}
+
+// Auth maps to the Pangolin blueprint auth block.
+// Only fields relevant to SSO are included; pincode/password/basic-auth
+// are intentionally omitted as they are not supported by newt-sidecar.
+type Auth struct {
+	SSOEnabled   bool     `yaml:"sso-enabled"`
+	SSORoles     []string `yaml:"sso-roles,omitempty"`
+	SSOUsers     []string `yaml:"sso-users,omitempty"`
+	AutoLoginIDP int      `yaml:"auto-login-idp,omitempty"`
 }
 
 type Rule struct {
@@ -69,6 +80,63 @@ func buildDenyRules(cfg *config.Config) []Rule {
 	return rules
 }
 
+// splitCSV splits a comma-separated string into a trimmed, non-empty slice.
+// Returns nil when s is empty.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, v := range strings.Split(s, ",") {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// buildAuth constructs an Auth block from annotations and global config defaults.
+// Returns nil when SSO is not enabled for this resource (annotation absent or not "true"/"1").
+// Auth is only valid for HTTP resources; callers must not pass annotations for TCP/UDP resources.
+func buildAuth(annotations map[string]string, cfg *config.Config) *Auth {
+	prefix := cfg.AnnotationPrefix
+
+	v, ok := annotations[prefix+"/auth-sso"]
+	if !ok || (v != "true" && v != "1") {
+		return nil
+	}
+
+	// Roles: annotation overrides global flag.
+	rolesRaw := cfg.AuthSSSORoles
+	if av, aok := annotations[prefix+"/auth-sso-roles"]; aok {
+		rolesRaw = av
+	}
+
+	// Users: annotation overrides global flag.
+	usersRaw := cfg.AuthSSSOUsers
+	if av, aok := annotations[prefix+"/auth-sso-users"]; aok {
+		usersRaw = av
+	}
+
+	// IdP: annotation overrides global flag.
+	idp := cfg.AuthSSSOIDP
+	if av, aok := annotations[prefix+"/auth-sso-idp"]; aok {
+		var parsed int
+		if _, err := fmt.Sscanf(av, "%d", &parsed); err == nil && parsed > 0 {
+			idp = parsed
+		}
+	}
+
+	auth := &Auth{
+		SSOEnabled:   true,
+		SSORoles:     splitCSV(rolesRaw),
+		SSOUsers:     splitCSV(usersRaw),
+		AutoLoginIDP: idp,
+	}
+	return auth
+}
+
 // BuildResource creates an HTTP Resource from an HTTPRoute hostname, annotations, and config.
 func BuildResource(routeName, hostname string, annotations map[string]string, cfg *config.Config) Resource {
 	name := routeName
@@ -88,6 +156,7 @@ func BuildResource(routeName, hostname string, annotations map[string]string, cf
 		SSL:           ssl,
 		FullDomain:    hostname,
 		TLSServerName: hostname,
+		Auth:          buildAuth(annotations, cfg),
 		Rules:         buildDenyRules(cfg),
 		Targets: []Target{
 			{
@@ -121,6 +190,10 @@ type ServicePort struct {
 	Method string
 	// SSL controls whether Pangolin enables SSL on the resource.
 	SSL bool
+
+	// Annotations holds the raw Kubernetes annotations of the Service.
+	// Used to resolve the auth block in HTTP mode.
+	Annotations map[string]string
 }
 
 // BuildServiceResource creates a blueprint Resource for a Service.
@@ -128,11 +201,11 @@ type ServicePort struct {
 // When sp.FullDomain is set (HTTP mode), Pangolin exposes the service at the
 // given domain over HTTPS. tls-server-name is always set to the full-domain.
 // Deny-country rules from cfg.DenyCountries are applied, identical to HTTPRoute
-// resources.
+// resources. An SSO auth block is added when newt-sidecar/auth-sso: "true" is set.
 //
 // When sp.FullDomain is empty (TCP/UDP mode), Pangolin opens a raw TCP or UDP
-// port tunnelled directly to the cluster-internal Service DNS name. Rules and
-// tls-server-name are not applicable and are omitted.
+// port tunnelled directly to the cluster-internal Service DNS name. Rules,
+// tls-server-name, and auth are not applicable and are omitted.
 func BuildServiceResource(sp ServicePort, cfg *config.Config) Resource {
 	if sp.FullDomain != "" {
 		// HTTP mode: direct Service, no gateway.
@@ -143,6 +216,7 @@ func BuildServiceResource(sp ServicePort, cfg *config.Config) Resource {
 			SSL:           sp.SSL,
 			FullDomain:    sp.FullDomain,
 			TLSServerName: sp.FullDomain,
+			Auth:          buildAuth(sp.Annotations, cfg),
 			Rules:         buildDenyRules(cfg),
 			Targets: []Target{
 				{
@@ -155,7 +229,7 @@ func BuildServiceResource(sp ServicePort, cfg *config.Config) Resource {
 		}
 	}
 
-	// TCP/UDP mode: direct Service, raw tunnel. No rules, no tls-server-name.
+	// TCP/UDP mode: direct Service, raw tunnel. No rules, no tls-server-name, no auth.
 	return Resource{
 		Name:      sp.Name,
 		Protocol:  sp.Protocol,

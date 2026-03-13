@@ -89,6 +89,7 @@ func buildAllPortEntries(svc *corev1.Service, svcKey, clusterHostname string, cf
 			ProxyPort:      int(p.Port),
 			TargetPort:     int(p.Port),
 			TargetHostname: clusterHostname,
+			// Auth is not supported in all-ports mode (TCP/UDP only).
 		}, cfg)
 	}
 
@@ -114,7 +115,7 @@ func buildSinglePortEntry(svc *corev1.Service, annotations map[string]string, cf
 }
 
 // resolvePort selects the port to expose and builds a ServicePort.
-// full-domain annotation → HTTP mode; absent → TCP/UDP mode.
+// full-domain annotation -> HTTP mode; absent -> TCP/UDP mode.
 // Port selection: /port annotation > single port > port named "http".
 // Protocol in TCP/UDP mode: ServicePort spec, overridable via /protocol annotation.
 func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svcKey, clusterHostname string, cfg *config.Config) (blueprint.ServicePort, bool) {
@@ -181,6 +182,7 @@ func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svc
 			SSL:            ssl,
 			TargetPort:     int(selected.Port),
 			TargetHostname: clusterHostname,
+			Annotations:    annotations,
 		}, true
 	}
 
@@ -198,6 +200,7 @@ func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svc
 		ProxyPort:      int(selected.Port),
 		TargetPort:     int(selected.Port),
 		TargetHostname: clusterHostname,
+		// Annotations intentionally omitted: auth is not valid for TCP/UDP resources.
 	}, true
 }
 

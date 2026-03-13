@@ -39,8 +39,13 @@ The sidecar runs alongside newt in the same pod, sharing a volume. It watches HT
 | `--enable-service` | `false` | Enable Service discovery (annotation-mode: opt-in via `newt-sidecar/enabled: "true"`) |
 | `--auto-service` | `false` | Enable Service discovery (auto-mode: opt-out via `newt-sidecar/enabled: "false"`) |
 | `--all-ports` | `false` | Expose all TCP/UDP ports of a Service as individual blueprint entries (global default, overridable per Service via `newt-sidecar/all-ports` annotation) |
+| `--auth-sso-roles` | `""` | Default comma-separated Pangolin roles for SSO-enabled resources (empty = none) |
+| `--auth-sso-users` | `""` | Default comma-separated user e-mails for SSO-enabled resources (empty = none) |
+| `--auth-sso-idp` | `0` | Default Pangolin IdP ID for `auto-login-idp` (`0` = not set) |
 
 Both `--enable-service` and `--auto-service` activate the Service controller. The difference is the default behaviour: in annotation-mode a Service must explicitly opt in; in auto-mode every Service is processed unless explicitly excluded.
+
+There is deliberately no `--auth-sso` global flag. SSO must be enabled explicitly per resource via the `newt-sidecar/auth-sso` annotation so that resources remain public unless opted in.
 
 ## HTTPRoute annotations
 
@@ -51,6 +56,17 @@ Add these to an HTTPRoute to override per-resource behaviour:
 | `newt-sidecar/enabled: "false"` | Skip this HTTPRoute |
 | `newt-sidecar/name: "Custom Name"` | Override the resource display name |
 | `newt-sidecar/ssl: "false"` | Disable SSL for this resource |
+| `newt-sidecar/auth-sso: "true"` | Enable SSO authentication |
+| `newt-sidecar/auth-sso-roles: "Member,Developer"` | Comma-separated Pangolin roles allowed (overrides `--auth-sso-roles`) |
+| `newt-sidecar/auth-sso-users: "user@example.com"` | Comma-separated user e-mails allowed (overrides `--auth-sso-users`) |
+| `newt-sidecar/auth-sso-idp: "1"` | Pangolin IdP ID for `auto-login-idp` — skips the Pangolin login page and redirects directly to the IdP (overrides `--auth-sso-idp`) |
+
+### Finding the IdP ID
+
+The `auto-login-idp` value is the internal numeric ID Pangolin assigns to each configured Identity Provider. You can find it in two ways:
+
+1. **Pangolin UI** — navigate to *Server Admin → Identity Providers*, click an IdP to edit it, and read the number from the URL: `.../admin/idp/**1**/general`
+2. **Pangolin API** — `GET /api/v1/idp` returns `idpId`, `name`, and `type` for every configured IdP
 
 ## Service annotations
 
@@ -80,6 +96,10 @@ Set `newt-sidecar/full-domain` to switch to HTTP mode. Pangolin exposes the Serv
 | `newt-sidecar/method` | `http` | Internal protocol to reach the Service: `http`, `https`, or `h2c` |
 | `newt-sidecar/ssl` | `--ssl` flag | Enable SSL on the Pangolin resource |
 | `newt-sidecar/name` | `<svc> <port>` | Override the resource display name |
+| `newt-sidecar/auth-sso` | — | `"true"` to enable SSO authentication |
+| `newt-sidecar/auth-sso-roles` | `--auth-sso-roles` | Comma-separated Pangolin roles (overrides global default) |
+| `newt-sidecar/auth-sso-users` | `--auth-sso-users` | Comma-separated user e-mails (overrides global default) |
+| `newt-sidecar/auth-sso-idp` | `--auth-sso-idp` | Pangolin IdP ID for `auto-login-idp` (overrides global default) |
 
 ### Port selection logic
 
@@ -277,6 +297,26 @@ metadata:
     newt-sidecar/enabled: "true"
     newt-sidecar/full-domain: "myapp.example.com"
     newt-sidecar/name: "My App"
+spec:
+  ports:
+    - name: http
+      port: 8080
+```
+
+HTTP tunnel with SSO (auto-login to IdP 1, role `Member` required):
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp
+  namespace: default
+  annotations:
+    newt-sidecar/enabled: "true"
+    newt-sidecar/full-domain: "myapp.example.com"
+    newt-sidecar/auth-sso: "true"
+    newt-sidecar/auth-sso-roles: "Member"
+    newt-sidecar/auth-sso-idp: "1"
 spec:
   ports:
     - name: http
