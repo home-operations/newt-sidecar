@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 
@@ -17,40 +17,36 @@ import (
 	"github.com/home-operations/newt-sidecar/internal/state"
 )
 
-// Controller is a generic Kubernetes resource watcher that builds blueprint
-// entries via a ResourceDefinition. Modelled after the gatus-sidecar pattern:
-// adding a new resource type only requires a new ResourceDefinition — no new
-// controller code.
+// Controller watches a single Kubernetes resource type and keeps blueprint state in sync.
 type Controller struct {
-	mu sync.Mutex
-	// resourceKeys maps "namespace/name" → []blueprint keys registered for that
-	// object. A single object may produce multiple keys (e.g. one per HTTPRoute
-	// hostname).
-	resourceKeys  map[string][]string
-	definition    *resources.ResourceDefinition
+	resourceKeys  map[string][]string // "namespace/name" → blueprint keys
+	gvr           schema.GroupVersionResource
+	convert       func(*unstructured.Unstructured) (metav1.Object, error)
+	handler       resources.ResourceHandler
 	stateManager  *state.Manager
 	dynamicClient dynamic.Interface
 }
 
-// New creates a Controller for the given ResourceDefinition.
 func New(definition *resources.ResourceDefinition, stateManager *state.Manager, dynamicClient dynamic.Interface) *Controller {
 	return &Controller{
 		resourceKeys:  make(map[string][]string),
-		definition:    definition,
+		gvr:           definition.GVR,
+		convert:       definition.ConvertFunc,
+		handler:       resources.NewHandler(definition),
 		stateManager:  stateManager,
 		dynamicClient: dynamicClient,
 	}
 }
 
-// Run performs the initial list then enters the watch loop.
 func (c *Controller) Run(ctx context.Context, cfg *config.Config) error {
-	if err := c.initialList(ctx, cfg); err != nil {
-		return fmt.Errorf("%s initial list failed: %w", c.definition.GVR.Resource, err)
+	rv, err := c.initialList(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("initial list failed for %s: %w", c.gvr.Resource, err)
 	}
 
 	for {
-		if err := c.watchLoop(ctx, cfg); err != nil {
-			slog.Error("watch loop error", "resource", c.definition.GVR.Resource, "error", err)
+		if err := c.watchLoop(ctx, cfg, rv); err != nil {
+			slog.Error("watch loop error", "resource", c.gvr.Resource, "error", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -60,17 +56,17 @@ func (c *Controller) Run(ctx context.Context, cfg *config.Config) error {
 	}
 }
 
-func (c *Controller) initialList(ctx context.Context, cfg *config.Config) error {
-	list, err := c.dynamicClient.Resource(c.definition.GVR).Namespace(cfg.Namespace).List(ctx, metav1.ListOptions{})
+func (c *Controller) initialList(ctx context.Context, cfg *config.Config) (string, error) {
+	list, err := c.dynamicClient.Resource(c.gvr).Namespace(cfg.Namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return fmt.Errorf("list %s: %w", c.definition.GVR.Resource, err)
+		return "", fmt.Errorf("list %s: %w", c.gvr.Resource, err)
 	}
 
 	changed := false
 	for _, item := range list.Items {
-		obj, err := c.definition.ConvertFunc(&item)
+		obj, err := c.convert(&item)
 		if err != nil {
-			slog.Error("failed to convert resource", "resource", c.definition.GVR.Resource, "name", item.GetName(), "error", err)
+			slog.Error("failed to convert resource", "resource", c.gvr.Resource, "error", err)
 			continue
 		}
 		if c.processObject(cfg, obj, false) {
@@ -82,13 +78,15 @@ func (c *Controller) initialList(ctx context.Context, cfg *config.Config) error 
 		c.stateManager.ForceWrite()
 	}
 
-	return nil
+	return list.GetResourceVersion(), nil
 }
 
-func (c *Controller) watchLoop(ctx context.Context, cfg *config.Config) error {
-	w, err := c.dynamicClient.Resource(c.definition.GVR).Namespace(cfg.Namespace).Watch(ctx, metav1.ListOptions{})
+func (c *Controller) watchLoop(ctx context.Context, cfg *config.Config, resourceVersion string) error {
+	w, err := c.dynamicClient.Resource(c.gvr).Namespace(cfg.Namespace).Watch(ctx, metav1.ListOptions{
+		ResourceVersion: resourceVersion,
+	})
 	if err != nil {
-		return fmt.Errorf("watch %s: %w", c.definition.GVR.Resource, err)
+		return fmt.Errorf("watch %s: %w", c.gvr.Resource, err)
 	}
 	defer w.Stop()
 
@@ -98,29 +96,34 @@ func (c *Controller) watchLoop(ctx context.Context, cfg *config.Config) error {
 			return nil
 		case evt, ok := <-w.ResultChan():
 			if !ok {
-				return fmt.Errorf("%s watch channel closed", c.definition.GVR.Resource)
+				return fmt.Errorf("watch channel closed")
 			}
-			c.handleEvent(cfg, evt)
+			c.processEvent(cfg, evt)
 		}
 	}
 }
 
-func (c *Controller) handleEvent(cfg *config.Config, evt watch.Event) {
+func (c *Controller) processEvent(cfg *config.Config, evt watch.Event) {
+	obj, err := c.convertEvent(evt)
+	if err != nil {
+		slog.Error("failed to process event", "resource", c.gvr.Resource, "error", err)
+		return
+	}
+	c.handleEvent(cfg, obj, evt.Type)
+}
+
+func (c *Controller) convertEvent(evt watch.Event) (metav1.Object, error) {
 	unstructuredObj, ok := evt.Object.(*unstructured.Unstructured)
 	if !ok {
-		slog.Error("unexpected event object type", "resource", c.definition.GVR.Resource, "type", fmt.Sprintf("%T", evt.Object))
-		return
+		return nil, fmt.Errorf("unexpected object type: %T", evt.Object)
 	}
+	return c.convert(unstructuredObj)
+}
 
-	obj, err := c.definition.ConvertFunc(unstructuredObj)
-	if err != nil {
-		slog.Error("failed to convert resource", "resource", c.definition.GVR.Resource, "error", err)
-		return
-	}
-
+func (c *Controller) handleEvent(cfg *config.Config, obj metav1.Object, eventType watch.EventType) {
 	objKey := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 
-	if evt.Type == watch.Deleted {
+	if eventType == watch.Deleted {
 		c.removeObject(objKey)
 		return
 	}
@@ -128,37 +131,31 @@ func (c *Controller) handleEvent(cfg *config.Config, evt watch.Event) {
 	c.processObject(cfg, obj, true)
 }
 
-// processObject processes a single Kubernetes object and updates state.
-// Returns true when any change was detected.
+// processObject returns true when any change was detected.
 func (c *Controller) processObject(cfg *config.Config, obj metav1.Object, write bool) bool {
 	objKey := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 
-	if !c.definition.ShouldProcess(obj, cfg) {
+	if !c.handler.ShouldProcess(obj, cfg) {
 		c.removeObject(objKey)
 		return false
 	}
 
-	entries := c.definition.BuildEntries(obj, cfg)
+	entries := c.handler.BuildEntries(obj, cfg)
 	if len(entries) == 0 {
 		c.removeObject(objKey)
 		return false
 	}
 
-	// Compute new key set.
 	newKeys := make([]string, 0, len(entries))
 	for k := range entries {
 		newKeys = append(newKeys, k)
 	}
 
-	// Swap old keys → new keys.
-	c.mu.Lock()
 	oldKeys := c.resourceKeys[objKey]
 	c.resourceKeys[objKey] = newKeys
-	c.mu.Unlock()
 
 	changed := false
 
-	// Remove keys no longer produced by this object.
 	newSet := make(map[string]bool, len(newKeys))
 	for _, k := range newKeys {
 		newSet[k] = true
@@ -171,11 +168,10 @@ func (c *Controller) processObject(cfg *config.Config, obj metav1.Object, write 
 		}
 	}
 
-	// Add or update current entries.
 	for key, resource := range entries {
 		if c.stateManager.AddOrUpdate(key, resource, write) {
 			slog.Info("updated resource in state",
-				"resource", c.definition.GVR.Resource,
+				"resource", c.gvr.Resource,
 				"key", key,
 				"object", objKey,
 			)
@@ -187,14 +183,12 @@ func (c *Controller) processObject(cfg *config.Config, obj metav1.Object, write 
 }
 
 func (c *Controller) removeObject(objKey string) {
-	c.mu.Lock()
 	keys := c.resourceKeys[objKey]
 	delete(c.resourceKeys, objKey)
-	c.mu.Unlock()
 
 	for _, key := range keys {
 		if removed := c.stateManager.Remove(key); removed {
-			slog.Info("removed resource from state", "resource", c.definition.GVR.Resource, "key", key)
+			slog.Info("removed resource from state", "resource", c.gvr.Resource, "key", key)
 		}
 	}
 }

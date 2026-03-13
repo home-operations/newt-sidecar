@@ -12,7 +12,6 @@ import (
 	"github.com/home-operations/newt-sidecar/internal/resources"
 )
 
-// Definition returns a ResourceDefinition for HTTPRoute resources.
 func Definition() *resources.ResourceDefinition {
 	return &resources.ResourceDefinition{
 		GVR: schema.GroupVersionResource{
@@ -20,29 +19,22 @@ func Definition() *resources.ResourceDefinition {
 			Version:  "v1",
 			Resource: "httproutes",
 		},
-		ConvertFunc:   resources.CreateConvertFunc(reflect.TypeOf(gatewayv1.HTTPRoute{})),
-		ShouldProcess: shouldProcess,
-		BuildEntries:  buildEntries,
+		ConvertFunc:  resources.CreateConvertFunc(reflect.TypeOf(gatewayv1.HTTPRoute{})),
+		FilterFunc:   filterByGateway,
+		BuildEntries: buildEntries,
 	}
 }
 
-func shouldProcess(obj metav1.Object, cfg *config.Config) bool {
+func filterByGateway(obj metav1.Object, cfg *config.Config) bool {
 	route, ok := obj.(*gatewayv1.HTTPRoute)
 	if !ok {
 		return false
 	}
 
-	annotations := obj.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
+	if cfg.GatewayName == "" {
+		return true
 	}
 
-	// Explicit opt-out.
-	if v, ok := annotations[cfg.AnnotationPrefix+"/enabled"]; ok && (v == "false" || v == "0") {
-		return false
-	}
-
-	// Must reference the configured gateway.
 	return referencesGateway(route, cfg.GatewayName, cfg.GatewayNamespace)
 }
 
@@ -67,9 +59,6 @@ func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Re
 }
 
 func referencesGateway(route *gatewayv1.HTTPRoute, gatewayName, gatewayNamespace string) bool {
-	if gatewayName == "" {
-		return true
-	}
 	for _, parent := range route.Spec.ParentRefs {
 		if parent.Name != gatewayv1.ObjectName(gatewayName) {
 			continue

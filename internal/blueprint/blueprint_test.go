@@ -100,6 +100,81 @@ func TestBuildResource_AnnotationOverrides(t *testing.T) {
 	}
 }
 
+func TestServiceToKey(t *testing.T) {
+	got := blueprint.ServiceToKey("default", "gameserver", "7777", "udp")
+	want := "default-gameserver-7777-udp"
+	if got != want {
+		t.Errorf("ServiceToKey = %q, want %q", got, want)
+	}
+}
+
+func TestBuildServiceResource_TCPMode(t *testing.T) {
+	cfg := &config.Config{SiteID: "site-1", AnnotationPrefix: "newt-sidecar"}
+	sp := blueprint.ServicePort{
+		Name:           "game-tcp",
+		Protocol:       "tcp",
+		ProxyPort:      7777,
+		TargetPort:     7777,
+		TargetHostname: "game.default.svc.cluster.local",
+	}
+	r := blueprint.BuildServiceResource(sp, cfg)
+
+	if r.Protocol != "tcp" {
+		t.Errorf("protocol = %q, want tcp", r.Protocol)
+	}
+	if r.ProxyPort != 7777 {
+		t.Errorf("proxy-port = %d, want 7777", r.ProxyPort)
+	}
+	if r.FullDomain != "" {
+		t.Errorf("full-domain should be empty in TCP mode, got %q", r.FullDomain)
+	}
+	if r.TLSServerName != "" {
+		t.Errorf("tls-server-name should be empty in TCP mode, got %q", r.TLSServerName)
+	}
+	if len(r.Rules) != 0 {
+		t.Errorf("rules should be empty in TCP mode, got %d", len(r.Rules))
+	}
+	if r.Targets[0].Hostname != "game.default.svc.cluster.local" {
+		t.Errorf("target hostname = %q, want game.default.svc.cluster.local", r.Targets[0].Hostname)
+	}
+}
+
+func TestBuildServiceResource_HTTPMode(t *testing.T) {
+	cfg := &config.Config{
+		SiteID:           "site-1",
+		DenyCountries:    "RU",
+		AnnotationPrefix: "newt-sidecar",
+	}
+	sp := blueprint.ServicePort{
+		Name:           "app http",
+		FullDomain:     "app.example.com",
+		Method:         "https",
+		SSL:            true,
+		TargetPort:     8080,
+		TargetHostname: "app.default.svc.cluster.local",
+	}
+	r := blueprint.BuildServiceResource(sp, cfg)
+
+	if r.Protocol != "http" {
+		t.Errorf("protocol = %q, want http", r.Protocol)
+	}
+	if r.FullDomain != "app.example.com" {
+		t.Errorf("full-domain = %q, want app.example.com", r.FullDomain)
+	}
+	if r.TLSServerName != "app.example.com" {
+		t.Errorf("tls-server-name = %q, want app.example.com", r.TLSServerName)
+	}
+	if r.ProxyPort != 0 {
+		t.Errorf("proxy-port should be 0 in HTTP mode, got %d", r.ProxyPort)
+	}
+	if len(r.Rules) != 1 || r.Rules[0].Value != "RU" {
+		t.Errorf("expected deny-country rule for RU, got %v", r.Rules)
+	}
+	if r.Targets[0].Method != "https" {
+		t.Errorf("target method = %q, want https", r.Targets[0].Method)
+	}
+}
+
 func TestBuildResource_NoDenyCountries(t *testing.T) {
 	cfg := &config.Config{
 		SiteID:           "test-site",
