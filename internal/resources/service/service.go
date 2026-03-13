@@ -16,6 +16,13 @@ import (
 	"github.com/home-operations/newt-sidecar/internal/resources"
 )
 
+const (
+	annotationTrue  = "true"
+	annotationFalse = "false"
+	annotationOne   = "1"
+	annotationZero  = "0"
+)
+
 // Definition returns a ResourceDefinition for Service resources.
 func Definition() *resources.ResourceDefinition {
 	return &resources.ResourceDefinition{
@@ -41,11 +48,11 @@ func shouldProcess(obj metav1.Object, cfg *config.Config) bool {
 
 	if !cfg.AutoService {
 		// Annotation-mode: only process when explicitly opted in.
-		return hasEnabled && (enabledVal == "true" || enabledVal == "1")
+		return hasEnabled && (enabledVal == annotationTrue || enabledVal == annotationOne)
 	}
 
 	// Auto-mode: process everything unless explicitly opted out.
-	return !(hasEnabled && (enabledVal == "false" || enabledVal == "0"))
+	return !hasEnabled || (enabledVal != annotationFalse && enabledVal != annotationZero)
 }
 
 // buildEntries builds blueprint entries for a Service.
@@ -82,7 +89,7 @@ func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Re
 // "true"/"1" -> on, "false"/"0" -> off, absent -> use --all-ports flag.
 func resolveAllPorts(annotations map[string]string, cfg *config.Config) bool {
 	if v, ok := annotations[cfg.AnnotationPrefix+"/all-ports"]; ok {
-		return v == "true" || v == "1"
+		return v == annotationTrue || v == annotationOne
 	}
 	return cfg.AllPorts
 }
@@ -213,7 +220,7 @@ func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svc
 		}
 		ssl := cfg.SSL
 		if v, ok := annotations[prefix+"/ssl"]; ok {
-			ssl = v == "true" || v == "1"
+			ssl = v == annotationTrue || v == annotationOne
 		}
 		return blueprint.ServicePort{
 			Name:           displayName,
