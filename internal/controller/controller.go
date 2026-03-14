@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/home-operations/newt-sidecar/internal/config"
 	"github.com/home-operations/newt-sidecar/internal/resources"
@@ -25,9 +26,10 @@ type Controller struct {
 	handler       resources.ResourceHandler
 	stateManager  *state.Manager
 	dynamicClient dynamic.Interface
+	clientset     kubernetes.Interface
 }
 
-func New(definition *resources.ResourceDefinition, stateManager *state.Manager, dynamicClient dynamic.Interface) *Controller {
+func New(definition *resources.ResourceDefinition, stateManager *state.Manager, dynamicClient dynamic.Interface, clientset kubernetes.Interface) *Controller {
 	return &Controller{
 		resourceKeys:  make(map[string][]string),
 		gvr:           definition.GVR,
@@ -35,17 +37,17 @@ func New(definition *resources.ResourceDefinition, stateManager *state.Manager, 
 		handler:       resources.NewHandler(definition),
 		stateManager:  stateManager,
 		dynamicClient: dynamicClient,
+		clientset:     clientset,
 	}
 }
 
 func (c *Controller) Run(ctx context.Context, cfg *config.Config) error {
-	rv, err := c.initialList(ctx, cfg)
-	if err != nil {
+	if err := c.initialList(ctx, cfg); err != nil {
 		return fmt.Errorf("initial list failed for %s: %w", c.gvr.Resource, err)
 	}
 
 	for {
-		if err := c.watchLoop(ctx, cfg, rv); err != nil {
+		if err := c.watchLoop(ctx, cfg); err != nil {
 			slog.Error("watch loop error", "resource", c.gvr.Resource, "error", err)
 		}
 		select {
@@ -56,10 +58,10 @@ func (c *Controller) Run(ctx context.Context, cfg *config.Config) error {
 	}
 }
 
-func (c *Controller) initialList(ctx context.Context, cfg *config.Config) (string, error) {
+func (c *Controller) initialList(ctx context.Context, cfg *config.Config) error {
 	list, err := c.dynamicClient.Resource(c.gvr).Namespace(cfg.Namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return "", fmt.Errorf("list %s: %w", c.gvr.Resource, err)
+		return fmt.Errorf("list %s: %w", c.gvr.Resource, err)
 	}
 
 	changed := false
@@ -69,7 +71,7 @@ func (c *Controller) initialList(ctx context.Context, cfg *config.Config) (strin
 			slog.Error("failed to convert resource", "resource", c.gvr.Resource, "error", err)
 			continue
 		}
-		if c.processObject(cfg, obj, false) {
+		if c.processObject(ctx, cfg, obj, false) {
 			changed = true
 		}
 	}
@@ -78,13 +80,11 @@ func (c *Controller) initialList(ctx context.Context, cfg *config.Config) (strin
 		c.stateManager.ForceWrite()
 	}
 
-	return list.GetResourceVersion(), nil
+	return nil
 }
 
-func (c *Controller) watchLoop(ctx context.Context, cfg *config.Config, resourceVersion string) error {
-	w, err := c.dynamicClient.Resource(c.gvr).Namespace(cfg.Namespace).Watch(ctx, metav1.ListOptions{
-		ResourceVersion: resourceVersion,
-	})
+func (c *Controller) watchLoop(ctx context.Context, cfg *config.Config) error {
+	w, err := c.dynamicClient.Resource(c.gvr).Namespace(cfg.Namespace).Watch(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("watch %s: %w", c.gvr.Resource, err)
 	}
@@ -98,18 +98,21 @@ func (c *Controller) watchLoop(ctx context.Context, cfg *config.Config, resource
 			if !ok {
 				return fmt.Errorf("watch channel closed")
 			}
-			c.processEvent(cfg, evt)
+			c.processEvent(ctx, cfg, evt)
 		}
 	}
 }
 
-func (c *Controller) processEvent(cfg *config.Config, evt watch.Event) {
+func (c *Controller) processEvent(ctx context.Context, cfg *config.Config, evt watch.Event) {
+	if evt.Type == watch.Bookmark {
+		return
+	}
 	obj, err := c.convertEvent(evt)
 	if err != nil {
 		slog.Error("failed to process event", "resource", c.gvr.Resource, "error", err)
 		return
 	}
-	c.handleEvent(cfg, obj, evt.Type)
+	c.handleEvent(ctx, cfg, obj, evt.Type)
 }
 
 func (c *Controller) convertEvent(evt watch.Event) (metav1.Object, error) {
@@ -120,7 +123,7 @@ func (c *Controller) convertEvent(evt watch.Event) (metav1.Object, error) {
 	return c.convert(unstructuredObj)
 }
 
-func (c *Controller) handleEvent(cfg *config.Config, obj metav1.Object, eventType watch.EventType) {
+func (c *Controller) handleEvent(ctx context.Context, cfg *config.Config, obj metav1.Object, eventType watch.EventType) {
 	objKey := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 
 	if eventType == watch.Deleted {
@@ -128,11 +131,31 @@ func (c *Controller) handleEvent(cfg *config.Config, obj metav1.Object, eventTyp
 		return
 	}
 
-	c.processObject(cfg, obj, true)
+	c.processObject(ctx, cfg, obj, true)
+}
+
+// resolveAuthSecret fetches the K8s Secret named by the {prefix}/auth-secret annotation.
+// Returns nil when the annotation is absent or the Secret cannot be retrieved.
+func (c *Controller) resolveAuthSecret(ctx context.Context, obj metav1.Object, cfg *config.Config) map[string]string {
+	secretName := obj.GetAnnotations()[cfg.AnnotationPrefix+"/auth-secret"]
+	if secretName == "" {
+		return nil
+	}
+	ns := obj.GetNamespace()
+	secret, err := c.clientset.CoreV1().Secrets(ns).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		slog.Warn("failed to resolve auth-secret", "secret", secretName, "namespace", ns, "error", err)
+		return nil
+	}
+	result := make(map[string]string, len(secret.Data))
+	for k, v := range secret.Data {
+		result[k] = string(v)
+	}
+	return result
 }
 
 // processObject returns true when any change was detected.
-func (c *Controller) processObject(cfg *config.Config, obj metav1.Object, write bool) bool {
+func (c *Controller) processObject(ctx context.Context, cfg *config.Config, obj metav1.Object, write bool) bool {
 	objKey := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 
 	if !c.handler.ShouldProcess(obj, cfg) {
@@ -140,7 +163,8 @@ func (c *Controller) processObject(cfg *config.Config, obj metav1.Object, write 
 		return false
 	}
 
-	entries := c.handler.BuildEntries(obj, cfg)
+	secretData := c.resolveAuthSecret(ctx, obj, cfg)
+	entries := c.handler.BuildEntries(ctx, obj, secretData, cfg)
 	if len(entries) == 0 {
 		c.removeObject(objKey)
 		return false

@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"context"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -20,7 +21,7 @@ var baseCfg = &config.Config{
 
 func buildEntries(svc *corev1.Service, cfg *config.Config) map[string]blueprint.Resource {
 	def := service.Definition()
-	return def.BuildEntries(svc, cfg)
+	return def.BuildEntries(context.Background(), svc, nil, cfg)
 }
 
 func svc(name string, ports []corev1.ServicePort, annotations map[string]string) *corev1.Service {
@@ -273,7 +274,7 @@ func TestBuildEntries_NameAnnotationOverride(t *testing.T) {
 func TestBuildEntries_HTTPMode_SSO_Enabled(t *testing.T) {
 	annotations := map[string]string{
 		"newt-sidecar/full-domain": "app.example.com",
-		"newt-sidecar/auth-sso":   "true",
+		"newt-sidecar/auth-sso":    "true",
 	}
 	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), baseCfg)
 	r := entries[blueprint.HostnameToKey("app.example.com")]
@@ -287,11 +288,11 @@ func TestBuildEntries_HTTPMode_SSO_Enabled(t *testing.T) {
 
 func TestBuildEntries_HTTPMode_SSO_AllFields(t *testing.T) {
 	annotations := map[string]string{
-		"newt-sidecar/full-domain":     "app.example.com",
-		"newt-sidecar/auth-sso":        "true",
-		"newt-sidecar/auth-sso-roles":  "Member,Developer",
-		"newt-sidecar/auth-sso-users":  "alice@example.com",
-		"newt-sidecar/auth-sso-idp":    "2",
+		"newt-sidecar/full-domain":    "app.example.com",
+		"newt-sidecar/auth-sso":       "true",
+		"newt-sidecar/auth-sso-roles": "Member,Developer",
+		"newt-sidecar/auth-sso-users": "alice@example.com",
+		"newt-sidecar/auth-sso-idp":   "2",
 	}
 	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), baseCfg)
 	r := entries[blueprint.HostnameToKey("app.example.com")]
@@ -315,7 +316,7 @@ func TestBuildEntries_HTTPMode_SSO_GlobalDefault(t *testing.T) {
 	cfg.AuthSSOIDP = 1
 	annotations := map[string]string{
 		"newt-sidecar/full-domain": "app.example.com",
-		"newt-sidecar/auth-sso":   "true",
+		"newt-sidecar/auth-sso":    "true",
 	}
 	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), &cfg)
 	r := entries[blueprint.HostnameToKey("app.example.com")]
@@ -343,6 +344,99 @@ func TestBuildEntries_TCPMode_NoAuth(t *testing.T) {
 	}
 	if r.Auth != nil {
 		t.Error("auth must be nil for TCP resources")
+	}
+}
+
+func TestBuildEntries_HTTPMode_TargetExtras(t *testing.T) {
+	annotations := map[string]string{
+		"newt-sidecar/full-domain":          "app.example.com",
+		"newt-sidecar/target-path":          "/api",
+		"newt-sidecar/target-path-match":    "prefix",
+		"newt-sidecar/target-rewrite-path":  "/",
+		"newt-sidecar/target-rewrite-match": "stripPrefix",
+		"newt-sidecar/target-priority":      "200",
+		"newt-sidecar/target-internal-port": "9090",
+		"newt-sidecar/target-healthcheck":   `{"hostname":"backend","port":8080,"path":"/health"}`,
+	}
+	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), baseCfg)
+	r := entries[blueprint.HostnameToKey("app.example.com")]
+	if len(r.Targets) == 0 {
+		t.Fatal("no targets")
+	}
+	tgt := r.Targets[0]
+	if tgt.Path != "/api" {
+		t.Errorf("Path = %q, want /api", tgt.Path)
+	}
+	if tgt.PathMatch != "prefix" {
+		t.Errorf("PathMatch = %q, want prefix", tgt.PathMatch)
+	}
+	if tgt.RewritePath != "/" {
+		t.Errorf("RewritePath = %q, want /", tgt.RewritePath)
+	}
+	if tgt.RewriteMatch != "stripPrefix" {
+		t.Errorf("RewriteMatch = %q, want stripPrefix", tgt.RewriteMatch)
+	}
+	if tgt.Priority != 200 {
+		t.Errorf("Priority = %d, want 200", tgt.Priority)
+	}
+	if tgt.InternalPort != 9090 {
+		t.Errorf("InternalPort = %d, want 9090", tgt.InternalPort)
+	}
+	if tgt.HealthCheck == nil || tgt.HealthCheck.Path != "/health" {
+		t.Errorf("HealthCheck = %v", tgt.HealthCheck)
+	}
+}
+
+func TestBuildEntries_HTTPMode_TLSServerName(t *testing.T) {
+	annotations := map[string]string{
+		"newt-sidecar/full-domain":     "app.example.com",
+		"newt-sidecar/tls-server-name": "backend.internal",
+	}
+	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), baseCfg)
+	r := entries[blueprint.HostnameToKey("app.example.com")]
+	if r.TLSServerName != "backend.internal" {
+		t.Errorf("TLSServerName = %q, want backend.internal", r.TLSServerName)
+	}
+}
+
+func TestBuildEntries_HTTPMode_HostHeaderAndHeaders(t *testing.T) {
+	annotations := map[string]string{
+		"newt-sidecar/full-domain": "app.example.com",
+		"newt-sidecar/host-header": "custom.internal",
+		"newt-sidecar/headers":     `[{"name":"X-Foo","value":"bar"}]`,
+	}
+	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), baseCfg)
+	r := entries[blueprint.HostnameToKey("app.example.com")]
+	if r.HostHeader != "custom.internal" {
+		t.Errorf("HostHeader = %q, want custom.internal", r.HostHeader)
+	}
+	if len(r.Headers) != 1 || r.Headers[0].Name != "X-Foo" {
+		t.Errorf("Headers = %v", r.Headers)
+	}
+}
+
+func TestBuildEntries_HTTPMode_Maintenance(t *testing.T) {
+	annotations := map[string]string{
+		"newt-sidecar/full-domain":                "app.example.com",
+		"newt-sidecar/maintenance-enabled":        "true",
+		"newt-sidecar/maintenance-type":           "forced",
+		"newt-sidecar/maintenance-title":          "Down",
+		"newt-sidecar/maintenance-message":        "Be right back",
+		"newt-sidecar/maintenance-estimated-time": "30m",
+	}
+	entries := buildEntries(svc("app", []corev1.ServicePort{port("http", 8080, corev1.ProtocolTCP)}, annotations), baseCfg)
+	r := entries[blueprint.HostnameToKey("app.example.com")]
+	if r.Maintenance == nil {
+		t.Fatal("Maintenance should not be nil")
+	}
+	if !r.Maintenance.Enabled {
+		t.Error("Maintenance.Enabled should be true")
+	}
+	if r.Maintenance.Type != "forced" {
+		t.Errorf("Type = %q, want forced", r.Maintenance.Type)
+	}
+	if r.Maintenance.EstimatedTime != "30m" {
+		t.Errorf("EstimatedTime = %q, want 30m", r.Maintenance.EstimatedTime)
 	}
 }
 

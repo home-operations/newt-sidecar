@@ -38,7 +38,7 @@ func TestBuildResource(t *testing.T) {
 		AnnotationPrefix: "newt-sidecar",
 	}
 
-	r := blueprint.BuildResource("home-assistant", "home.erwanleboucher.dev", nil, cfg)
+	r := blueprint.BuildResource("home-assistant", "home.erwanleboucher.dev", nil, nil, cfg)
 
 	if r.Name != "home-assistant" {
 		t.Errorf("Name = %q, want %q", r.Name, "home-assistant")
@@ -76,6 +76,9 @@ func TestBuildResource(t *testing.T) {
 	if r.Auth != nil {
 		t.Error("Auth should be nil when auth-sso annotation is absent")
 	}
+	if r.Enabled != nil {
+		t.Error("Enabled should be nil when annotation is absent")
+	}
 }
 
 func TestBuildResource_AnnotationOverrides(t *testing.T) {
@@ -93,7 +96,7 @@ func TestBuildResource_AnnotationOverrides(t *testing.T) {
 		"newt-sidecar/ssl":  "false",
 	}
 
-	r := blueprint.BuildResource("original-name", "test.example.com", annotations, cfg)
+	r := blueprint.BuildResource("original-name", "test.example.com", annotations, nil, cfg)
 
 	if r.Name != "Custom Name" {
 		t.Errorf("Name = %q, want %q", r.Name, "Custom Name")
@@ -101,6 +104,451 @@ func TestBuildResource_AnnotationOverrides(t *testing.T) {
 	if r.SSL {
 		t.Error("SSL should be false after annotation override")
 	}
+}
+
+func TestBuildResource_Enabled(t *testing.T) {
+	cfg := &config.Config{
+		SiteID:           "test-site",
+		TargetHostname:   "gw.local",
+		TargetPort:       443,
+		AnnotationPrefix: "newt-sidecar",
+	}
+
+	t.Run("enabled true", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/enabled": "true",
+		}, nil, cfg)
+		if r.Enabled == nil || !*r.Enabled {
+			t.Error("Enabled should be *true")
+		}
+	})
+
+	t.Run("enabled false", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/enabled": "false",
+		}, nil, cfg)
+		if r.Enabled == nil || *r.Enabled {
+			t.Error("Enabled should be *false")
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", nil, nil, cfg)
+		if r.Enabled != nil {
+			t.Error("Enabled should be nil when annotation is absent")
+		}
+	})
+}
+
+func TestBuildResource_HostHeader(t *testing.T) {
+	cfg := &config.Config{
+		SiteID:           "test-site",
+		TargetHostname:   "gw.local",
+		TargetPort:       443,
+		AnnotationPrefix: "newt-sidecar",
+	}
+
+	r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+		"newt-sidecar/host-header": "custom.internal",
+	}, nil, cfg)
+
+	if r.HostHeader != "custom.internal" {
+		t.Errorf("HostHeader = %q, want %q", r.HostHeader, "custom.internal")
+	}
+}
+
+func TestBuildResource_Headers(t *testing.T) {
+	cfg := &config.Config{
+		SiteID:           "test-site",
+		TargetHostname:   "gw.local",
+		TargetPort:       443,
+		AnnotationPrefix: "newt-sidecar",
+	}
+
+	t.Run("valid JSON", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/headers": `[{"name":"X-Foo","value":"bar"},{"name":"X-Baz","value":"qux"}]`,
+		}, nil, cfg)
+		if len(r.Headers) != 2 {
+			t.Fatalf("len(Headers) = %d, want 2", len(r.Headers))
+		}
+		if r.Headers[0].Name != "X-Foo" || r.Headers[0].Value != "bar" {
+			t.Errorf("Headers[0] = %+v", r.Headers[0])
+		}
+		if r.Headers[1].Name != "X-Baz" || r.Headers[1].Value != "qux" {
+			t.Errorf("Headers[1] = %+v", r.Headers[1])
+		}
+	})
+
+	t.Run("invalid JSON silently returns nil", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/headers": `not-json`,
+		}, nil, cfg)
+		if r.Headers != nil {
+			t.Error("Headers should be nil on parse error")
+		}
+	})
+
+	t.Run("absent annotation", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", nil, nil, cfg)
+		if r.Headers != nil {
+			t.Error("Headers should be nil when annotation absent")
+		}
+	})
+}
+
+func TestBuildResource_Maintenance(t *testing.T) {
+	cfg := &config.Config{
+		SiteID:           "test-site",
+		TargetHostname:   "gw.local",
+		TargetPort:       443,
+		AnnotationPrefix: "newt-sidecar",
+	}
+
+	t.Run("maintenance enabled with all fields", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/maintenance-enabled":        "true",
+			"newt-sidecar/maintenance-type":           "forced",
+			"newt-sidecar/maintenance-title":          "Down for maintenance",
+			"newt-sidecar/maintenance-message":        "Back soon",
+			"newt-sidecar/maintenance-estimated-time": "2h",
+		}, nil, cfg)
+		if r.Maintenance == nil {
+			t.Fatal("Maintenance should not be nil")
+		}
+		if !r.Maintenance.Enabled {
+			t.Error("Maintenance.Enabled should be true")
+		}
+		if r.Maintenance.Type != "forced" {
+			t.Errorf("Type = %q, want forced", r.Maintenance.Type)
+		}
+		if r.Maintenance.Title != "Down for maintenance" {
+			t.Errorf("Title = %q", r.Maintenance.Title)
+		}
+		if r.Maintenance.Message != "Back soon" {
+			t.Errorf("Message = %q", r.Maintenance.Message)
+		}
+		if r.Maintenance.EstimatedTime != "2h" {
+			t.Errorf("EstimatedTime = %q", r.Maintenance.EstimatedTime)
+		}
+	})
+
+	t.Run("maintenance absent", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", nil, nil, cfg)
+		if r.Maintenance != nil {
+			t.Error("Maintenance should be nil when annotation absent")
+		}
+	})
+
+	t.Run("maintenance-enabled=false", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/maintenance-enabled": "false",
+		}, nil, cfg)
+		if r.Maintenance != nil {
+			t.Error("Maintenance should be nil when disabled")
+		}
+	})
+}
+
+func TestBuildResource_TLSServerName(t *testing.T) {
+	cfg := &config.Config{
+		SiteID:           "test-site",
+		TargetHostname:   "gw.local",
+		TargetPort:       443,
+		AnnotationPrefix: "newt-sidecar",
+	}
+
+	t.Run("defaults to hostname", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", nil, nil, cfg)
+		if r.TLSServerName != "app.example.com" {
+			t.Errorf("TLSServerName = %q, want app.example.com", r.TLSServerName)
+		}
+	})
+
+	t.Run("annotation overrides hostname", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/tls-server-name": "backend.internal",
+		}, nil, cfg)
+		if r.TLSServerName != "backend.internal" {
+			t.Errorf("TLSServerName = %q, want backend.internal", r.TLSServerName)
+		}
+	})
+}
+
+func TestBuildResource_TargetExtras(t *testing.T) {
+	cfg := &config.Config{
+		SiteID:           "test-site",
+		TargetHostname:   "gw.local",
+		TargetPort:       443,
+		AnnotationPrefix: "newt-sidecar",
+	}
+
+	t.Run("target-path and path-match", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/target-path":       "/api",
+			"newt-sidecar/target-path-match": "prefix",
+		}, nil, cfg)
+		if r.Targets[0].Path != "/api" {
+			t.Errorf("Path = %q, want /api", r.Targets[0].Path)
+		}
+		if r.Targets[0].PathMatch != "prefix" {
+			t.Errorf("PathMatch = %q, want prefix", r.Targets[0].PathMatch)
+		}
+	})
+
+	t.Run("invalid path-match is ignored", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/target-path-match": "invalid",
+		}, nil, cfg)
+		if r.Targets[0].PathMatch != "" {
+			t.Errorf("PathMatch should be empty for invalid value, got %q", r.Targets[0].PathMatch)
+		}
+	})
+
+	t.Run("target-rewrite-path and rewrite-match", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/target-rewrite-path":  "/new",
+			"newt-sidecar/target-rewrite-match": "stripPrefix",
+		}, nil, cfg)
+		if r.Targets[0].RewritePath != "/new" {
+			t.Errorf("RewritePath = %q, want /new", r.Targets[0].RewritePath)
+		}
+		if r.Targets[0].RewriteMatch != "stripPrefix" {
+			t.Errorf("RewriteMatch = %q, want stripPrefix", r.Targets[0].RewriteMatch)
+		}
+	})
+
+	t.Run("target-priority valid range", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/target-priority": "200",
+		}, nil, cfg)
+		if r.Targets[0].Priority != 200 {
+			t.Errorf("Priority = %d, want 200", r.Targets[0].Priority)
+		}
+	})
+
+	t.Run("target-priority out of range is ignored", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/target-priority": "9999",
+		}, nil, cfg)
+		if r.Targets[0].Priority != 0 {
+			t.Errorf("Priority should be 0 for out-of-range value, got %d", r.Targets[0].Priority)
+		}
+	})
+
+	t.Run("target-internal-port", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/target-internal-port": "8080",
+		}, nil, cfg)
+		if r.Targets[0].InternalPort != 8080 {
+			t.Errorf("InternalPort = %d, want 8080", r.Targets[0].InternalPort)
+		}
+	})
+
+	t.Run("target-healthcheck JSON", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/target-healthcheck": `{"hostname":"backend","port":8080,"path":"/health","interval":30}`,
+		}, nil, cfg)
+		if r.Targets[0].HealthCheck == nil {
+			t.Fatal("HealthCheck should not be nil")
+		}
+		if r.Targets[0].HealthCheck.Hostname != "backend" {
+			t.Errorf("HealthCheck.Hostname = %q, want backend", r.Targets[0].HealthCheck.Hostname)
+		}
+		if r.Targets[0].HealthCheck.Port != 8080 {
+			t.Errorf("HealthCheck.Port = %d, want 8080", r.Targets[0].HealthCheck.Port)
+		}
+		if r.Targets[0].HealthCheck.Path != "/health" {
+			t.Errorf("HealthCheck.Path = %q, want /health", r.Targets[0].HealthCheck.Path)
+		}
+		if r.Targets[0].HealthCheck.Interval != 30 {
+			t.Errorf("HealthCheck.Interval = %d, want 30", r.Targets[0].HealthCheck.Interval)
+		}
+	})
+
+	t.Run("invalid target-healthcheck JSON is ignored", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/target-healthcheck": `not-json`,
+		}, nil, cfg)
+		if r.Targets[0].HealthCheck != nil {
+			t.Error("HealthCheck should be nil on parse error")
+		}
+	})
+
+	t.Run("no extras — zero values", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", nil, nil, cfg)
+		tgt := r.Targets[0]
+		if tgt.Path != "" || tgt.PathMatch != "" || tgt.RewritePath != "" ||
+			tgt.RewriteMatch != "" || tgt.Priority != 0 || tgt.InternalPort != 0 ||
+			tgt.HealthCheck != nil {
+			t.Errorf("unexpected target extras on resource with no annotations: %+v", tgt)
+		}
+	})
+}
+
+func TestBuildServiceResource_HTTPMode_TLSServerName(t *testing.T) {
+	cfg := &config.Config{SiteID: "site-1", AnnotationPrefix: "newt-sidecar"}
+
+	t.Run("defaults to FullDomain", func(t *testing.T) {
+		sp := blueprint.ServicePort{
+			Name:           "app",
+			FullDomain:     "app.example.com",
+			Method:         "https",
+			TargetPort:     8080,
+			TargetHostname: "app.default.svc.cluster.local",
+		}
+		r := blueprint.BuildServiceResource(sp, cfg)
+		if r.TLSServerName != "app.example.com" {
+			t.Errorf("TLSServerName = %q, want app.example.com", r.TLSServerName)
+		}
+	})
+
+	t.Run("overridden by TLSServerName field", func(t *testing.T) {
+		sp := blueprint.ServicePort{
+			Name:           "app",
+			FullDomain:     "app.example.com",
+			TLSServerName:  "backend.internal",
+			Method:         "https",
+			TargetPort:     8080,
+			TargetHostname: "app.default.svc.cluster.local",
+		}
+		r := blueprint.BuildServiceResource(sp, cfg)
+		if r.TLSServerName != "backend.internal" {
+			t.Errorf("TLSServerName = %q, want backend.internal", r.TLSServerName)
+		}
+	})
+}
+
+func TestBuildServiceResource_HTTPMode_ExtrasForwarded(t *testing.T) {
+	cfg := &config.Config{SiteID: "site-1", AnnotationPrefix: "newt-sidecar"}
+	hc := &blueprint.HealthCheck{Hostname: "backend", Port: 8080, Path: "/health"}
+	sp := blueprint.ServicePort{
+		Name:               "app",
+		FullDomain:         "app.example.com",
+		Method:             "https",
+		TargetPort:         8080,
+		TargetHostname:     "app.default.svc.cluster.local",
+		HostHeader:         "custom.internal",
+		Headers:            []blueprint.Header{{Name: "X-Foo", Value: "bar"}},
+		TargetPath:         "/api",
+		TargetPathMatch:    "prefix",
+		TargetRewritePath:  "/",
+		TargetRewriteMatch: "stripPrefix",
+		TargetPriority:     500,
+		TargetInternalPort: 9090,
+		TargetHealthCheck:  hc,
+	}
+	r := blueprint.BuildServiceResource(sp, cfg)
+
+	if r.HostHeader != "custom.internal" {
+		t.Errorf("HostHeader = %q, want custom.internal", r.HostHeader)
+	}
+	if len(r.Headers) != 1 || r.Headers[0].Name != "X-Foo" {
+		t.Errorf("Headers = %v", r.Headers)
+	}
+	tgt := r.Targets[0]
+	if tgt.Path != "/api" {
+		t.Errorf("Path = %q, want /api", tgt.Path)
+	}
+	if tgt.PathMatch != "prefix" {
+		t.Errorf("PathMatch = %q, want prefix", tgt.PathMatch)
+	}
+	if tgt.RewritePath != "/" {
+		t.Errorf("RewritePath = %q, want /", tgt.RewritePath)
+	}
+	if tgt.RewriteMatch != "stripPrefix" {
+		t.Errorf("RewriteMatch = %q, want stripPrefix", tgt.RewriteMatch)
+	}
+	if tgt.Priority != 500 {
+		t.Errorf("Priority = %d, want 500", tgt.Priority)
+	}
+	if tgt.InternalPort != 9090 {
+		t.Errorf("InternalPort = %d, want 9090", tgt.InternalPort)
+	}
+	if tgt.HealthCheck == nil || tgt.HealthCheck.Path != "/health" {
+		t.Errorf("HealthCheck = %v", tgt.HealthCheck)
+	}
+}
+
+func TestBuildAuth_SecretData(t *testing.T) {
+	cfg := &config.Config{
+		AnnotationPrefix: "newt-sidecar",
+	}
+
+	t.Run("pincode from secret", func(t *testing.T) {
+		auth := blueprint.BuildAuth(map[string]string{}, map[string]string{"pincode": "1234"}, cfg)
+		if auth == nil {
+			t.Fatal("auth should not be nil")
+		}
+		if auth.Pincode != 1234 {
+			t.Errorf("Pincode = %d, want 1234", auth.Pincode)
+		}
+	})
+
+	t.Run("password from secret", func(t *testing.T) {
+		auth := blueprint.BuildAuth(map[string]string{}, map[string]string{"password": "s3cr3t"}, cfg)
+		if auth == nil {
+			t.Fatal("auth should not be nil")
+		}
+		if auth.Password != "s3cr3t" {
+			t.Errorf("Password = %q, want s3cr3t", auth.Password)
+		}
+	})
+
+	t.Run("basic-auth from secret", func(t *testing.T) {
+		auth := blueprint.BuildAuth(map[string]string{}, map[string]string{
+			"basic-auth-user":     "alice",
+			"basic-auth-password": "pass123",
+		}, cfg)
+		if auth == nil {
+			t.Fatal("auth should not be nil")
+		}
+		if auth.BasicAuth == nil {
+			t.Fatal("BasicAuth should not be nil")
+		}
+		if auth.BasicAuth.User != "alice" {
+			t.Errorf("BasicAuth.User = %q, want alice", auth.BasicAuth.User)
+		}
+		if auth.BasicAuth.Password != "pass123" {
+			t.Errorf("BasicAuth.Password = %q, want pass123", auth.BasicAuth.Password)
+		}
+	})
+
+	t.Run("nil secretData returns nil when no other auth", func(t *testing.T) {
+		auth := blueprint.BuildAuth(map[string]string{}, nil, cfg)
+		if auth != nil {
+			t.Error("auth should be nil when no auth fields set")
+		}
+	})
+}
+
+func TestBuildAuth_WhitelistUsers(t *testing.T) {
+	cfg := &config.Config{
+		AnnotationPrefix:   "newt-sidecar",
+		AuthWhitelistUsers: "global@example.com",
+	}
+
+	t.Run("global default", func(t *testing.T) {
+		auth := blueprint.BuildAuth(map[string]string{}, nil, cfg)
+		if auth == nil {
+			t.Fatal("auth should not be nil")
+		}
+		if len(auth.WhitelistUsers) != 1 || auth.WhitelistUsers[0] != "global@example.com" {
+			t.Errorf("WhitelistUsers = %v", auth.WhitelistUsers)
+		}
+	})
+
+	t.Run("annotation overrides global", func(t *testing.T) {
+		auth := blueprint.BuildAuth(map[string]string{
+			"newt-sidecar/auth-whitelist-users": "local@example.com,other@example.com",
+		}, nil, cfg)
+		if auth == nil {
+			t.Fatal("auth should not be nil")
+		}
+		if len(auth.WhitelistUsers) != 2 {
+			t.Errorf("WhitelistUsers = %v, want 2 entries", auth.WhitelistUsers)
+		}
+	})
 }
 
 func TestServiceToKey(t *testing.T) {
@@ -158,6 +606,7 @@ func TestBuildServiceResource_HTTPMode(t *testing.T) {
 		SSL:            true,
 		TargetPort:     8080,
 		TargetHostname: "app.default.svc.cluster.local",
+		Rules:          blueprint.BuildRules(map[string]string{}, "newt-sidecar", cfg),
 	}
 	r := blueprint.BuildServiceResource(sp, cfg)
 
@@ -221,7 +670,7 @@ func TestBuildResource_NoDenyCountries(t *testing.T) {
 		AnnotationPrefix: "newt-sidecar",
 	}
 
-	r := blueprint.BuildResource("myroute", "myapp.example.com", nil, cfg)
+	r := blueprint.BuildResource("myroute", "myapp.example.com", nil, nil, cfg)
 
 	if len(r.Rules) != 0 {
 		t.Errorf("Rules should be empty, got %d rules", len(r.Rules))
@@ -241,7 +690,7 @@ func TestBuildResource_SSO_AnnotationOnly(t *testing.T) {
 		"newt-sidecar/auth-sso": "true",
 	}
 
-	r := blueprint.BuildResource("myroute", "myapp.example.com", annotations, cfg)
+	r := blueprint.BuildResource("myroute", "myapp.example.com", annotations, nil, cfg)
 
 	if r.Auth == nil {
 		t.Fatal("auth should not be nil when auth-sso=true")
@@ -276,7 +725,7 @@ func TestBuildResource_SSO_AllFields(t *testing.T) {
 		"newt-sidecar/auth-sso-idp":   "3",
 	}
 
-	r := blueprint.BuildResource("myroute", "myapp.example.com", annotations, cfg)
+	r := blueprint.BuildResource("myroute", "myapp.example.com", annotations, nil, cfg)
 
 	if r.Auth == nil {
 		t.Fatal("auth should not be nil")
@@ -309,7 +758,7 @@ func TestBuildResource_SSO_GlobalDefaultsOverriddenByAnnotation(t *testing.T) {
 		"newt-sidecar/auth-sso-idp":   "5",
 	}
 
-	r := blueprint.BuildResource("myroute", "myapp.example.com", annotations, cfg)
+	r := blueprint.BuildResource("myroute", "myapp.example.com", annotations, nil, cfg)
 
 	if r.Auth == nil {
 		t.Fatal("auth should not be nil")
@@ -332,7 +781,7 @@ func TestBuildResource_SSO_Absent(t *testing.T) {
 	}
 
 	// Global defaults set but annotation not present: auth must remain nil.
-	r := blueprint.BuildResource("myroute", "myapp.example.com", nil, cfg)
+	r := blueprint.BuildResource("myroute", "myapp.example.com", nil, nil, cfg)
 
 	if r.Auth != nil {
 		t.Error("auth should be nil when auth-sso annotation is absent, even if global defaults are set")

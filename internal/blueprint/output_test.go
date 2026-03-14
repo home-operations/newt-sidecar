@@ -22,8 +22,8 @@ func TestBlueprintYAMLOutput(t *testing.T) {
 
 	bp := blueprint.Blueprint{
 		PublicResources: map[string]blueprint.Resource{
-			blueprint.HostnameToKey("home.erwanleboucher.dev"):   blueprint.BuildResource("home-assistant", "home.erwanleboucher.dev", nil, cfg),
-			blueprint.HostnameToKey("wsflux.erwanleboucher.dev"): blueprint.BuildResource("webhook-receiver", "wsflux.erwanleboucher.dev", nil, cfg),
+			blueprint.HostnameToKey("home.erwanleboucher.dev"):   blueprint.BuildResource("home-assistant", "home.erwanleboucher.dev", nil, nil, cfg),
+			blueprint.HostnameToKey("wsflux.erwanleboucher.dev"): blueprint.BuildResource("webhook-receiver", "wsflux.erwanleboucher.dev", nil, nil, cfg),
 		},
 	}
 

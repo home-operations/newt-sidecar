@@ -1,6 +1,7 @@
 package httproute
 
 import (
+	"context"
 	"reflect"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,7 +39,7 @@ func filterByGateway(obj metav1.Object, cfg *config.Config) bool {
 	return referencesGateway(route, cfg.GatewayName, cfg.GatewayNamespace)
 }
 
-func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Resource {
+func buildEntries(ctx context.Context, obj metav1.Object, secretData map[string]string, cfg *config.Config) map[string]blueprint.Resource {
 	route, ok := obj.(*gatewayv1.HTTPRoute)
 	if !ok {
 		return nil
@@ -53,7 +54,7 @@ func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Re
 	for _, h := range route.Spec.Hostnames {
 		hostname := string(h)
 		key := blueprint.HostnameToKey(hostname)
-		entries[key] = blueprint.BuildResource(route.Name, hostname, annotations, cfg)
+		entries[key] = blueprint.BuildResource(route.Name, hostname, annotations, secretData, cfg)
 	}
 	return entries
 }

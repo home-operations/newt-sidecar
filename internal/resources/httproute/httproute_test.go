@@ -1,6 +1,7 @@
 package httproute_test
 
 import (
+	"context"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -111,7 +112,7 @@ func TestFilter_GatewayNamespaceConfigured_RouteHasNoNamespace_Passes(t *testing
 func TestBuildEntries_SingleHostname(t *testing.T) {
 	d := httproute.Definition()
 	r := route("home-assistant", []string{"home.example.com"}, nil, nil)
-	entries := d.BuildEntries(r, baseCfg)
+	entries := d.BuildEntries(context.Background(), r, nil, baseCfg)
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
 	}
@@ -131,7 +132,7 @@ func TestBuildEntries_SingleHostname(t *testing.T) {
 func TestBuildEntries_MultipleHostnames_OneEntryEach(t *testing.T) {
 	d := httproute.Definition()
 	r := route("app", []string{"a.example.com", "b.example.com"}, nil, nil)
-	entries := d.BuildEntries(r, baseCfg)
+	entries := d.BuildEntries(context.Background(), r, nil, baseCfg)
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries for 2 hostnames, got %d", len(entries))
 	}
@@ -145,7 +146,7 @@ func TestBuildEntries_MultipleHostnames_OneEntryEach(t *testing.T) {
 func TestBuildEntries_NoHostnames_ReturnsEmpty(t *testing.T) {
 	d := httproute.Definition()
 	r := route("app", []string{}, nil, nil)
-	entries := d.BuildEntries(r, baseCfg)
+	entries := d.BuildEntries(context.Background(), r, nil, baseCfg)
 	if len(entries) != 0 {
 		t.Errorf("expected empty entries for route with no hostnames, got %d", len(entries))
 	}
@@ -156,7 +157,7 @@ func TestBuildEntries_NameAnnotationOverride(t *testing.T) {
 	r := route("app", []string{"app.example.com"}, nil, map[string]string{
 		"newt-sidecar/name": "Custom Name",
 	})
-	entries := d.BuildEntries(r, baseCfg)
+	entries := d.BuildEntries(context.Background(), r, nil, baseCfg)
 	key := blueprint.HostnameToKey("app.example.com")
 	if entries[key].Name != "Custom Name" {
 		t.Errorf("name = %q, want %q", entries[key].Name, "Custom Name")

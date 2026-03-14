@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -34,7 +35,7 @@ func Definition() *resources.ResourceDefinition {
 	}
 }
 
-func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Resource {
+func buildEntries(ctx context.Context, obj metav1.Object, secretData map[string]string, cfg *config.Config) map[string]blueprint.Resource {
 	svc, ok := obj.(*corev1.Service)
 	if !ok {
 		return nil
@@ -52,7 +53,7 @@ func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Re
 		return buildAllPortEntries(svc, svcKey, clusterHostname, cfg)
 	}
 
-	return buildSinglePortEntry(svc, annotations, cfg, svcKey, clusterHostname)
+	return buildSinglePortEntry(svc, annotations, secretData, cfg, svcKey, clusterHostname)
 }
 
 // resolveAllPorts returns true when all-ports mode is active.
@@ -95,8 +96,8 @@ func buildAllPortEntries(svc *corev1.Service, svcKey, clusterHostname string, cf
 	return entries
 }
 
-func buildSinglePortEntry(svc *corev1.Service, annotations map[string]string, cfg *config.Config, svcKey, clusterHostname string) map[string]blueprint.Resource {
-	sp, ok := resolvePort(svc, annotations, cfg.AnnotationPrefix, svcKey, clusterHostname, cfg)
+func buildSinglePortEntry(svc *corev1.Service, annotations map[string]string, secretData map[string]string, cfg *config.Config, svcKey, clusterHostname string) map[string]blueprint.Resource {
+	sp, ok := resolvePort(svc, annotations, secretData, cfg.AnnotationPrefix, svcKey, clusterHostname, cfg)
 	if !ok {
 		return nil
 	}
@@ -117,7 +118,7 @@ func buildSinglePortEntry(svc *corev1.Service, annotations map[string]string, cf
 // full-domain annotation -> HTTP mode; absent -> TCP/UDP mode.
 // Port selection: /port annotation > single port > port named "http".
 // Protocol in TCP/UDP mode: ServicePort spec, overridable via /protocol annotation.
-func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svcKey, clusterHostname string, cfg *config.Config) (blueprint.ServicePort, bool) {
+func resolvePort(svc *corev1.Service, annotations map[string]string, secretData map[string]string, prefix, svcKey, clusterHostname string, cfg *config.Config) (blueprint.ServicePort, bool) {
 	fullDomain := strings.TrimSpace(annotations[prefix+"/full-domain"])
 	httpMode := fullDomain != ""
 
@@ -174,14 +175,28 @@ func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svc
 		if v, ok := annotations[prefix+"/ssl"]; ok {
 			ssl = v == annotationTrue || v == annotationOne
 		}
+		extras := blueprint.BuildTargetExtras(blueprint.Target{}, annotations, prefix)
 		return blueprint.ServicePort{
-			Name:           displayName,
-			FullDomain:     fullDomain,
-			Method:         method,
-			SSL:            ssl,
-			TargetPort:     int(selected.Port),
-			TargetHostname: clusterHostname,
-			Auth:           blueprint.BuildAuth(annotations, cfg),
+			Name:               displayName,
+			FullDomain:         fullDomain,
+			TLSServerName:      strings.TrimSpace(annotations[prefix+"/tls-server-name"]),
+			Method:             method,
+			SSL:                ssl,
+			HostHeader:         annotations[prefix+"/host-header"],
+			Headers:            blueprint.BuildHeaders(annotations, prefix),
+			Maintenance:        blueprint.BuildMaintenance(annotations, prefix),
+			Rules:              blueprint.BuildRules(annotations, prefix, cfg),
+			TargetPort:         int(selected.Port),
+			TargetHostname:     clusterHostname,
+			Auth:               blueprint.BuildAuth(annotations, secretData, cfg),
+			TargetEnabled:      extras.Enabled,
+			TargetPath:         extras.Path,
+			TargetPathMatch:    extras.PathMatch,
+			TargetRewritePath:  extras.RewritePath,
+			TargetRewriteMatch: extras.RewriteMatch,
+			TargetPriority:     extras.Priority,
+			TargetInternalPort: extras.InternalPort,
+			TargetHealthCheck:  extras.HealthCheck,
 		}, true
 	}
 
@@ -210,4 +225,3 @@ func serviceProtocol(p corev1.Protocol) string {
 		return "tcp"
 	}
 }
-

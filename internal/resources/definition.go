@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 
@@ -15,7 +16,7 @@ import (
 
 type AutoConfigFunc func(cfg *config.Config) bool
 type FilterFunc func(obj metav1.Object, cfg *config.Config) bool
-type BuildEntriesFunc func(obj metav1.Object, cfg *config.Config) map[string]blueprint.Resource
+type BuildEntriesFunc func(ctx context.Context, obj metav1.Object, secretData map[string]string, cfg *config.Config) map[string]blueprint.Resource
 
 // ResourceDefinition describes how to watch, filter, and convert a single
 // Kubernetes resource type into blueprint entries.

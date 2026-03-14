@@ -1,6 +1,8 @@
 package resources
 
 import (
+	"context"
+
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/home-operations/newt-sidecar/internal/blueprint"
@@ -9,7 +11,7 @@ import (
 
 type ResourceHandler interface {
 	ShouldProcess(obj v1.Object, cfg *config.Config) bool
-	BuildEntries(obj v1.Object, cfg *config.Config) map[string]blueprint.Resource
+	BuildEntries(ctx context.Context, obj v1.Object, secretData map[string]string, cfg *config.Config) map[string]blueprint.Resource
 }
 
 type Handler struct {
@@ -42,11 +44,11 @@ func (h *Handler) ShouldProcess(obj v1.Object, cfg *config.Config) bool {
 	return HasRequiredAnnotations(obj, cfg)
 }
 
-func (h *Handler) BuildEntries(obj v1.Object, cfg *config.Config) map[string]blueprint.Resource {
+func (h *Handler) BuildEntries(ctx context.Context, obj v1.Object, secretData map[string]string, cfg *config.Config) map[string]blueprint.Resource {
 	if h.definition.BuildEntries == nil {
 		return nil
 	}
-	return h.definition.BuildEntries(obj, cfg)
+	return h.definition.BuildEntries(ctx, obj, secretData, cfg)
 }
 
 func isOptOut(obj v1.Object, cfg *config.Config) bool {

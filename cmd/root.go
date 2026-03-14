@@ -14,6 +14,7 @@ import (
 	"github.com/home-operations/newt-sidecar/internal/resources/service"
 	"github.com/home-operations/newt-sidecar/internal/state"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -35,6 +36,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		slog.Error("create kubernetes clientset", "error", err)
+		os.Exit(1)
+	}
+
 	stateManager := state.NewManager(cfg.Output)
 
 	// errCh collects fatal errors from controllers so main can exit cleanly.
@@ -42,7 +49,7 @@ func main() {
 
 	// HTTPRoute controller — only started when a gateway is configured.
 	if cfg.GatewayName != "" {
-		ctrl := controller.New(httproute.Definition(), stateManager, dc)
+		ctrl := controller.New(httproute.Definition(), stateManager, dc, clientset)
 		go func() {
 			if err := ctrl.Run(ctx, cfg); err != nil {
 				errCh <- fmt.Errorf("httproute controller: %w", err)
@@ -52,7 +59,7 @@ func main() {
 
 	// Service controller — started when --enable-service or --auto-service is set.
 	if cfg.EnableService || cfg.AutoService {
-		ctrl := controller.New(service.Definition(), stateManager, dc)
+		ctrl := controller.New(service.Definition(), stateManager, dc, clientset)
 		go func() {
 			if err := ctrl.Run(ctx, cfg); err != nil {
 				errCh <- fmt.Errorf("service controller: %w", err)

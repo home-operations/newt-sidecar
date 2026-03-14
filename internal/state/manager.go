@@ -79,8 +79,15 @@ func (m *Manager) writeState() {
 		return
 	}
 
-	if err := os.WriteFile(m.outputFile, yamlData, 0o644); err != nil {
-		slog.Error("failed to write blueprint to file", "error", err)
+	tmp := m.outputFile + ".tmp"
+	if err := os.WriteFile(tmp, yamlData, 0o644); err != nil {
+		slog.Error("failed to write blueprint to temp file", "error", err)
+		return
+	}
+
+	if err := os.Rename(tmp, m.outputFile); err != nil {
+		slog.Error("failed to rename blueprint temp file", "error", err)
+		_ = os.Remove(tmp)
 		return
 	}
 

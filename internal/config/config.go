@@ -25,9 +25,10 @@ type Config struct {
 	AllPorts      bool
 
 	// SSO auth defaults (per-resource annotation always overrides)
-	AuthSSORoles string
-	AuthSSOUsers string
-	AuthSSOIDP   int
+	AuthSSORoles       string
+	AuthSSOUsers       string
+	AuthSSOIDP         int
+	AuthWhitelistUsers string
 }
 
 // Load parses CLI flags and returns a populated Config.
@@ -60,6 +61,7 @@ func Load() *Config {
 	flag.StringVar(&cfg.AuthSSORoles, "auth-sso-roles", "", "Default comma-separated Pangolin roles for SSO-enabled resources (empty = none)")
 	flag.StringVar(&cfg.AuthSSOUsers, "auth-sso-users", "", "Default comma-separated user e-mails for SSO-enabled resources (empty = none)")
 	flag.IntVar(&cfg.AuthSSOIDP, "auth-sso-idp", 0, "Default Pangolin IdP ID for auto-login-idp (0 = not set)")
+	flag.StringVar(&cfg.AuthWhitelistUsers, "auth-whitelist-users", "", "Default comma-separated user e-mails for whitelist-users (empty = none)")
 
 	flag.Parse()
 
