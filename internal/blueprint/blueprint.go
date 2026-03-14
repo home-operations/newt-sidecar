@@ -2,6 +2,7 @@ package blueprint
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/home-operations/newt-sidecar/internal/config"
@@ -78,8 +79,6 @@ func buildDenyRules(cfg *config.Config) []Rule {
 	return rules
 }
 
-// splitCSV splits a comma-separated string into a trimmed, non-empty slice.
-// Returns nil when s is empty.
 func splitCSV(s string) []string {
 	if s == "" {
 		return nil
@@ -94,10 +93,9 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// buildAuth constructs an Auth block from annotations and global config defaults.
-// Returns nil when the newt-sidecar/auth-sso annotation is absent or not "true"/"1".
-// Auth is only valid for HTTP resources; callers must not invoke this for TCP/UDP.
-func buildAuth(annotations map[string]string, cfg *config.Config) *Auth {
+// BuildAuth constructs an Auth block from annotations and global config defaults.
+// Returns nil when the auth-sso annotation is absent or not "true".
+func BuildAuth(annotations map[string]string, cfg *config.Config) *Auth {
 	prefix := cfg.AnnotationPrefix
 
 	v, ok := annotations[prefix+"/auth-sso"]
@@ -117,8 +115,7 @@ func buildAuth(annotations map[string]string, cfg *config.Config) *Auth {
 
 	idp := cfg.AuthSSOIDP
 	if av, aok := annotations[prefix+"/auth-sso-idp"]; aok {
-		var parsed int
-		if _, err := fmt.Sscanf(av, "%d", &parsed); err == nil && parsed > 0 {
+		if parsed, err := strconv.Atoi(av); err == nil && parsed > 0 {
 			idp = parsed
 		}
 	}
@@ -153,7 +150,7 @@ func BuildResource(routeName, hostname string, annotations map[string]string, cf
 		SSL:           ssl,
 		FullDomain:    hostname,
 		TLSServerName: hostname,
-		Auth:          buildAuth(annotations, cfg),
+		Auth:          BuildAuth(annotations, cfg),
 		Rules:         buildDenyRules(cfg),
 		Targets: []Target{
 			{
@@ -203,7 +200,6 @@ type ServicePort struct {
 // tls-server-name, and auth are not applicable and are omitted.
 func BuildServiceResource(sp ServicePort, cfg *config.Config) Resource {
 	if sp.FullDomain != "" {
-		// HTTP mode: direct Service, no gateway.
 		return Resource{
 			Name:          sp.Name,
 			Protocol:      "http",
@@ -223,7 +219,6 @@ func BuildServiceResource(sp ServicePort, cfg *config.Config) Resource {
 		}
 	}
 
-	// TCP/UDP mode: raw tunnel. No rules, no tls-server-name, no auth.
 	return Resource{
 		Name:      sp.Name,
 		Protocol:  sp.Protocol,
