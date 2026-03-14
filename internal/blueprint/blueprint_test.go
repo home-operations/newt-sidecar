@@ -73,6 +73,9 @@ func TestBuildResource(t *testing.T) {
 	if r.Targets[0].Port != 443 {
 		t.Errorf("Targets[0].Port = %d, want 443", r.Targets[0].Port)
 	}
+	if r.Auth != nil {
+		t.Error("Auth should be nil when auth-sso annotation is absent")
+	}
 }
 
 func TestBuildResource_AnnotationOverrides(t *testing.T) {
@@ -134,6 +137,9 @@ func TestBuildServiceResource_TCPMode(t *testing.T) {
 	if len(r.Rules) != 0 {
 		t.Errorf("rules should be empty in TCP mode, got %d", len(r.Rules))
 	}
+	if r.Auth != nil {
+		t.Error("auth should be nil in TCP mode")
+	}
 	if r.Targets[0].Hostname != "game.default.svc.cluster.local" {
 		t.Errorf("target hostname = %q, want game.default.svc.cluster.local", r.Targets[0].Hostname)
 	}
@@ -173,6 +179,36 @@ func TestBuildServiceResource_HTTPMode(t *testing.T) {
 	if r.Targets[0].Method != "https" {
 		t.Errorf("target method = %q, want https", r.Targets[0].Method)
 	}
+	if r.Auth != nil {
+		t.Error("auth should be nil when Auth field not set on ServicePort")
+	}
+}
+
+func TestBuildServiceResource_HTTPMode_WithAuth(t *testing.T) {
+	cfg := &config.Config{SiteID: "site-1", AnnotationPrefix: "newt-sidecar"}
+	sp := blueprint.ServicePort{
+		Name:           "app http",
+		FullDomain:     "app.example.com",
+		Method:         "http",
+		SSL:            true,
+		TargetPort:     8080,
+		TargetHostname: "app.default.svc.cluster.local",
+		Auth: &blueprint.Auth{
+			SSOEnabled: true,
+			SSORoles:   []string{"Member"},
+		},
+	}
+	r := blueprint.BuildServiceResource(sp, cfg)
+
+	if r.Auth == nil {
+		t.Fatal("auth should not be nil in HTTP mode when set")
+	}
+	if !r.Auth.SSOEnabled {
+		t.Error("sso-enabled should be true")
+	}
+	if len(r.Auth.SSORoles) != 1 || r.Auth.SSORoles[0] != "Member" {
+		t.Errorf("sso-roles = %v, want [Member]", r.Auth.SSORoles)
+	}
 }
 
 func TestBuildResource_NoDenyCountries(t *testing.T) {
@@ -189,5 +225,116 @@ func TestBuildResource_NoDenyCountries(t *testing.T) {
 
 	if len(r.Rules) != 0 {
 		t.Errorf("Rules should be empty, got %d rules", len(r.Rules))
+	}
+}
+
+func TestBuildResource_SSO_AnnotationOnly(t *testing.T) {
+	cfg := &config.Config{
+		SiteID:           "test-site",
+		TargetHostname:   "gw.local",
+		TargetPort:       443,
+		TargetMethod:     "https",
+		AnnotationPrefix: "newt-sidecar",
+	}
+
+	annotations := map[string]string{
+		"newt-sidecar/auth-sso": "true",
+	}
+
+	r := blueprint.BuildResource("myroute", "myapp.example.com", annotations, cfg)
+
+	if r.Auth == nil {
+		t.Fatal("auth should not be nil when auth-sso=true")
+	}
+	if !r.Auth.SSOEnabled {
+		t.Error("sso-enabled should be true")
+	}
+	if r.Auth.SSORoles != nil {
+		t.Errorf("sso-roles should be nil when not set, got %v", r.Auth.SSORoles)
+	}
+	if r.Auth.SSOUsers != nil {
+		t.Errorf("sso-users should be nil when not set, got %v", r.Auth.SSOUsers)
+	}
+	if r.Auth.AutoLoginIDP != 0 {
+		t.Errorf("auto-login-idp should be 0 when not set, got %d", r.Auth.AutoLoginIDP)
+	}
+}
+
+func TestBuildResource_SSO_AllFields(t *testing.T) {
+	cfg := &config.Config{
+		SiteID:           "test-site",
+		TargetHostname:   "gw.local",
+		TargetPort:       443,
+		TargetMethod:     "https",
+		AnnotationPrefix: "newt-sidecar",
+	}
+
+	annotations := map[string]string{
+		"newt-sidecar/auth-sso":       "true",
+		"newt-sidecar/auth-sso-roles": "Member,Developer",
+		"newt-sidecar/auth-sso-users": "alice@example.com,bob@example.com",
+		"newt-sidecar/auth-sso-idp":   "3",
+	}
+
+	r := blueprint.BuildResource("myroute", "myapp.example.com", annotations, cfg)
+
+	if r.Auth == nil {
+		t.Fatal("auth should not be nil")
+	}
+	if len(r.Auth.SSORoles) != 2 || r.Auth.SSORoles[0] != "Member" || r.Auth.SSORoles[1] != "Developer" {
+		t.Errorf("sso-roles = %v, want [Member Developer]", r.Auth.SSORoles)
+	}
+	if len(r.Auth.SSOUsers) != 2 {
+		t.Errorf("sso-users = %v, want 2 entries", r.Auth.SSOUsers)
+	}
+	if r.Auth.AutoLoginIDP != 3 {
+		t.Errorf("auto-login-idp = %d, want 3", r.Auth.AutoLoginIDP)
+	}
+}
+
+func TestBuildResource_SSO_GlobalDefaultsOverriddenByAnnotation(t *testing.T) {
+	cfg := &config.Config{
+		SiteID:           "test-site",
+		TargetHostname:   "gw.local",
+		TargetPort:       443,
+		TargetMethod:     "https",
+		AnnotationPrefix: "newt-sidecar",
+		AuthSSORoles:     "Member",
+		AuthSSOIDP:       1,
+	}
+
+	annotations := map[string]string{
+		"newt-sidecar/auth-sso":       "true",
+		"newt-sidecar/auth-sso-roles": "Admin-Custom",
+		"newt-sidecar/auth-sso-idp":   "5",
+	}
+
+	r := blueprint.BuildResource("myroute", "myapp.example.com", annotations, cfg)
+
+	if r.Auth == nil {
+		t.Fatal("auth should not be nil")
+	}
+	if len(r.Auth.SSORoles) != 1 || r.Auth.SSORoles[0] != "Admin-Custom" {
+		t.Errorf("sso-roles = %v, want [Admin-Custom] (annotation should override global)", r.Auth.SSORoles)
+	}
+	if r.Auth.AutoLoginIDP != 5 {
+		t.Errorf("auto-login-idp = %d, want 5 (annotation should override global)", r.Auth.AutoLoginIDP)
+	}
+}
+
+func TestBuildResource_SSO_Absent(t *testing.T) {
+	cfg := &config.Config{
+		SiteID:           "test-site",
+		TargetHostname:   "gw.local",
+		TargetPort:       443,
+		AnnotationPrefix: "newt-sidecar",
+		AuthSSORoles:     "Member",
+	}
+
+	// Global defaults set but annotation not present: auth must remain nil.
+	r := blueprint.BuildResource("myroute", "myapp.example.com", nil, cfg)
+
+	if r.Auth != nil {
+		t.Error("auth should be nil when auth-sso annotation is absent, even if global defaults are set")
 	}
 }
