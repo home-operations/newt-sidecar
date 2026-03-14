@@ -231,6 +231,22 @@ func TestBuildEntries_HTTPMode_FullDomain(t *testing.T) {
 	if r.FullDomain != "app.example.com" {
 		t.Errorf("full-domain = %q, want app.example.com", r.FullDomain)
 	}
+	if r.Name != "app-http" {
+		t.Errorf("display name = %q, want app-http", r.Name)
+	}
+}
+
+func TestBuildEntries_HTTPMode_DisplayName_UnnamedPort(t *testing.T) {
+	// Single unnamed port in HTTP mode: name should be "<svc>-<port number>".
+	annotations := map[string]string{
+		"newt-sidecar/full-domain": "app.example.com",
+	}
+	ports := []corev1.ServicePort{{Port: 4000, Protocol: corev1.ProtocolTCP}}
+	entries := buildEntries(svc("app", ports, annotations), baseCfg)
+	r := entries[blueprint.HostnameToKey("app.example.com")]
+	if r.Name != "app-4000" {
+		t.Errorf("display name = %q, want app-4000", r.Name)
+	}
 }
 
 func TestBuildEntries_HTTPMode_MethodAnnotation(t *testing.T) {
@@ -266,6 +282,30 @@ func TestBuildEntries_NameAnnotationOverride(t *testing.T) {
 		if r.Name != "My App" {
 			t.Errorf("name = %q, want %q", r.Name, "My App")
 		}
+	}
+}
+
+// --- all-ports + full-domain interaction ---
+
+func TestBuildEntries_FullDomain_TakesPrecedenceOverAllPorts(t *testing.T) {
+	// --all-ports is set globally but full-domain annotation is present:
+	// must produce a single HTTP entry, not multiple TCP entries.
+	cfg := *baseCfg
+	cfg.AllPorts = true
+	ports := []corev1.ServicePort{
+		port("http", 8080, corev1.ProtocolTCP),
+		port("metrics", 9090, corev1.ProtocolTCP),
+	}
+	annotations := map[string]string{
+		"newt-sidecar/full-domain": "app.example.com",
+	}
+	entries := buildEntries(svc("app", ports, annotations), &cfg)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 HTTP entry when full-domain overrides all-ports, got %d: %v", len(entries), keys(entries))
+	}
+	r := entries[blueprint.HostnameToKey("app.example.com")]
+	if r.Protocol != "http" {
+		t.Errorf("protocol = %q, want http", r.Protocol)
 	}
 }
 

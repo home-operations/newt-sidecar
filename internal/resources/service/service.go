@@ -49,7 +49,10 @@ func buildEntries(ctx context.Context, obj metav1.Object, secretData map[string]
 	svcKey := fmt.Sprintf("%s/%s", svc.Namespace, svc.Name)
 	clusterHostname := fmt.Sprintf("%s.%s.svc.cluster.local", svc.Name, svc.Namespace)
 
-	if resolveAllPorts(annotations, cfg) {
+	// full-domain takes precedence over all-ports: HTTP mode and all-ports are
+	// incompatible. When full-domain is set we always use single-port/HTTP mode.
+	hasFullDomain := strings.TrimSpace(annotations[cfg.AnnotationPrefix+"/full-domain"]) != ""
+	if !hasFullDomain && resolveAllPorts(annotations, cfg) {
 		return buildAllPortEntries(svc, svcKey, clusterHostname, cfg)
 	}
 
@@ -158,7 +161,7 @@ func resolvePort(svc *corev1.Service, annotations map[string]string, secretData 
 	if portName == "" {
 		portName = strconv.Itoa(int(selected.Port))
 	}
-	displayName := fmt.Sprintf("%s %s", svc.Name, portName)
+	displayName := fmt.Sprintf("%s-%s", svc.Name, portName)
 	if v, ok := annotations[prefix+"/name"]; ok && v != "" {
 		displayName = v
 	}
