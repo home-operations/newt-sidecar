@@ -48,7 +48,10 @@ func buildEntries(obj metav1.Object, cfg *config.Config) map[string]blueprint.Re
 	svcKey := fmt.Sprintf("%s/%s", svc.Namespace, svc.Name)
 	clusterHostname := fmt.Sprintf("%s.%s.svc.cluster.local", svc.Name, svc.Namespace)
 
-	if resolveAllPorts(annotations, cfg) {
+	// full-domain takes precedence over all-ports: HTTP mode and all-ports are
+	// incompatible. When full-domain is set we always use single-port/HTTP mode.
+	hasFullDomain := strings.TrimSpace(annotations[cfg.AnnotationPrefix+"/full-domain"]) != ""
+	if !hasFullDomain && resolveAllPorts(annotations, cfg) {
 		return buildAllPortEntries(svc, svcKey, clusterHostname, cfg)
 	}
 
@@ -157,7 +160,7 @@ func resolvePort(svc *corev1.Service, annotations map[string]string, prefix, svc
 	if portName == "" {
 		portName = strconv.Itoa(int(selected.Port))
 	}
-	displayName := fmt.Sprintf("%s %s", svc.Name, portName)
+	displayName := fmt.Sprintf("%s-%s", svc.Name, portName)
 	if v, ok := annotations[prefix+"/name"]; ok && v != "" {
 		displayName = v
 	}
@@ -210,4 +213,3 @@ func serviceProtocol(p corev1.Protocol) string {
 		return "tcp"
 	}
 }
-
