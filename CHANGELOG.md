@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.1](https://github.com/home-operations/newt-sidecar/compare/0.1.0...0.1.1) (2026-03-15)
+
+
+### Features
+
+* improve parsing for boolean ([7da1ce0](https://github.com/home-operations/newt-sidecar/commit/7da1ce0137a25a92eb49ff27061afb7aafda4131))
+* improve validation and add health ([24b0de0](https://github.com/home-operations/newt-sidecar/commit/24b0de0076edd582dc55bde6203ff7244368e6ab))
+
+
+### Bug Fixes
+
+* **github-action:** rename workflow to avoid conflict ([6f88d04](https://github.com/home-operations/newt-sidecar/commit/6f88d04a6d6ff5da61c295d5baa5e3bea23cb1d2))
+
 ## [0.1.0](https://github.com/home-operations/newt-sidecar/compare/0.0.2...0.1.0) (2026-03-14)
 
 
