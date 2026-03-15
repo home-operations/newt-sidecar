@@ -3,6 +3,7 @@ package blueprint
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -166,7 +167,9 @@ func BuildRules(annotations map[string]string, prefix string, cfg *config.Config
 	// Parse annotation rules first
 	if raw, ok := annotations[prefix+"/rules"]; ok && raw != "" {
 		var annotationRules []Rule
-		if err := json.Unmarshal([]byte(raw), &annotationRules); err == nil {
+		if err := json.Unmarshal([]byte(raw), &annotationRules); err != nil {
+			slog.Warn("failed to parse rules annotation", "annotation", prefix+"/rules", "error", err)
+		} else {
 			for _, r := range annotationRules {
 				if isValidRule(r) {
 					rules = append(rules, r)
@@ -231,16 +234,17 @@ func BuildHeaders(annotations map[string]string, prefix string) []Header {
 	}
 	var headers []Header
 	if err := json.Unmarshal([]byte(raw), &headers); err != nil {
+		slog.Warn("failed to parse headers annotation", "annotation", prefix+"/headers", "error", err)
 		return nil
 	}
 	return headers
 }
 
 // BuildMaintenance builds a Maintenance block from annotations.
-// Returns nil when {prefix}/maintenance-enabled is absent or falsy.
+// Returns nil when {prefix}/maintenance-enabled is absent or not exactly "true" or "1".
 func BuildMaintenance(annotations map[string]string, prefix string) *Maintenance {
 	v, ok := annotations[prefix+"/maintenance-enabled"]
-	if !ok || v == "false" || v == "0" || v == "" {
+	if !ok || !isTruthy(v) {
 		return nil
 	}
 	return &Maintenance{
@@ -297,7 +301,9 @@ func BuildTargetExtras(base Target, annotations map[string]string, prefix string
 	}
 	if v := annotations[prefix+"/target-healthcheck"]; v != "" {
 		var hc HealthCheck
-		if err := json.Unmarshal([]byte(v), &hc); err == nil {
+		if err := json.Unmarshal([]byte(v), &hc); err != nil {
+			slog.Warn("failed to parse target-healthcheck annotation", "annotation", prefix+"/target-healthcheck", "error", err)
+		} else {
 			t.HealthCheck = &hc
 		}
 	}

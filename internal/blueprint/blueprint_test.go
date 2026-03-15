@@ -248,6 +248,15 @@ func TestBuildResource_Maintenance(t *testing.T) {
 			t.Error("Maintenance should be nil when disabled")
 		}
 	})
+
+	t.Run("maintenance-enabled typo returns nil", func(t *testing.T) {
+		r := blueprint.BuildResource("r", "app.example.com", map[string]string{
+			"newt-sidecar/maintenance-enabled": "ture",
+		}, nil, cfg)
+		if r.Maintenance != nil {
+			t.Error("Maintenance should be nil for a non-truthy value like 'ture'")
+		}
+	})
 }
 
 func TestBuildResource_TLSServerName(t *testing.T) {
