@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,8 +29,9 @@ type Controller struct {
 	clientset    kubernetes.Interface
 	cfg          *config.Config
 
-	ctx    atomic.Value // stores context.Context; context.Background() until Run() sets it
-	synced atomic.Bool  // false during initial cache fill; true after ForceWrite()
+	ctxMu  sync.RWMutex
+	ctx    context.Context // context.Background() until Run() sets it
+	synced atomic.Bool     // false during initial cache fill; true after ForceWrite()
 }
 
 func New(definition *resources.ResourceDefinition, stateManager *state.Manager, informer cache.SharedIndexInformer, clientset kubernetes.Interface, cfg *config.Config) *Controller {
@@ -43,7 +45,7 @@ func New(definition *resources.ResourceDefinition, stateManager *state.Manager, 
 		clientset:    clientset,
 		cfg:          cfg,
 	}
-	c.ctx.Store(context.Background())
+	c.ctx = context.Background()
 
 	if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.onAdd,
@@ -57,7 +59,9 @@ func New(definition *resources.ResourceDefinition, stateManager *state.Manager, 
 }
 
 func (c *Controller) Run(ctx context.Context) error {
-	c.ctx.Store(ctx)
+	c.ctxMu.Lock()
+	c.ctx = ctx
+	c.ctxMu.Unlock()
 
 	if !cache.WaitForCacheSync(ctx.Done(), c.informer.HasSynced) {
 		return fmt.Errorf("cache sync timed out for %s", c.gvr.Resource)
@@ -76,7 +80,9 @@ func (c *Controller) onAdd(obj interface{}) {
 		slog.Error("onAdd: failed to convert object", "resource", c.gvr.Resource, "error", err)
 		return
 	}
-	ctx := c.ctx.Load().(context.Context)
+	c.ctxMu.RLock()
+	ctx := c.ctx
+	c.ctxMu.RUnlock()
 	c.processObject(ctx, metaObj, c.synced.Load())
 }
 
@@ -86,7 +92,9 @@ func (c *Controller) onUpdate(_ interface{}, newObj interface{}) {
 		slog.Error("onUpdate: failed to convert object", "resource", c.gvr.Resource, "error", err)
 		return
 	}
-	ctx := c.ctx.Load().(context.Context)
+	c.ctxMu.RLock()
+	ctx := c.ctx
+	c.ctxMu.RUnlock()
 	c.processObject(ctx, metaObj, c.synced.Load())
 }
 
@@ -129,20 +137,19 @@ func (c *Controller) resolveAuthSecret(ctx context.Context, obj metav1.Object) m
 	return result
 }
 
-// processObject returns true when any change was detected.
-func (c *Controller) processObject(ctx context.Context, obj metav1.Object, write bool) bool {
+func (c *Controller) processObject(ctx context.Context, obj metav1.Object, write bool) {
 	objKey := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 
 	if !c.handler.ShouldProcess(obj, c.cfg) {
 		c.removeObject(objKey)
-		return false
+		return
 	}
 
 	secretData := c.resolveAuthSecret(ctx, obj)
 	entries := c.handler.BuildEntries(ctx, obj, secretData, c.cfg)
 	if len(entries) == 0 {
 		c.removeObject(objKey)
-		return false
+		return
 	}
 
 	newKeys := make([]string, 0, len(entries))
@@ -153,17 +160,13 @@ func (c *Controller) processObject(ctx context.Context, obj metav1.Object, write
 	oldKeys := c.resourceKeys[objKey]
 	c.resourceKeys[objKey] = newKeys
 
-	changed := false
-
 	newSet := make(map[string]bool, len(newKeys))
 	for _, k := range newKeys {
 		newSet[k] = true
 	}
 	for _, old := range oldKeys {
 		if !newSet[old] {
-			if c.stateManager.Remove(old) {
-				changed = true
-			}
+			c.stateManager.Remove(old)
 		}
 	}
 
@@ -174,11 +177,8 @@ func (c *Controller) processObject(ctx context.Context, obj metav1.Object, write
 				"key", key,
 				"object", objKey,
 			)
-			changed = true
 		}
 	}
-
-	return changed
 }
 
 func (c *Controller) GVRString() string {

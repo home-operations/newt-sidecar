@@ -40,7 +40,7 @@ func TestReadyz_Healthy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /readyz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("/readyz returned %d, want 200", resp.StatusCode)
@@ -56,7 +56,7 @@ func TestReadyz_Unhealthy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /readyz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("/readyz returned %d, want 503", resp.StatusCode)
