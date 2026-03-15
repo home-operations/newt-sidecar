@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
+	"sync/atomic"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 
 	"github.com/home-operations/newt-sidecar/internal/config"
 	"github.com/home-operations/newt-sidecar/internal/resources"
@@ -20,124 +19,100 @@ import (
 
 // Controller watches a single Kubernetes resource type and keeps blueprint state in sync.
 type Controller struct {
-	resourceKeys  map[string][]string // "namespace/name" → blueprint keys
-	gvr           schema.GroupVersionResource
-	convert       func(*unstructured.Unstructured) (metav1.Object, error)
-	handler       resources.ResourceHandler
-	stateManager  *state.Manager
-	dynamicClient dynamic.Interface
-	clientset     kubernetes.Interface
+	resourceKeys map[string][]string // "namespace/name" → blueprint keys
+	gvr          schema.GroupVersionResource
+	convert      func(*unstructured.Unstructured) (metav1.Object, error)
+	handler      resources.ResourceHandler
+	stateManager *state.Manager
+	informer     cache.SharedIndexInformer
+	clientset    kubernetes.Interface
+	cfg          *config.Config
+
+	ctx    atomic.Value // stores context.Context; context.Background() until Run() sets it
+	synced atomic.Bool  // false during initial cache fill; true after ForceWrite()
 }
 
-func New(definition *resources.ResourceDefinition, stateManager *state.Manager, dynamicClient dynamic.Interface, clientset kubernetes.Interface) *Controller {
-	return &Controller{
-		resourceKeys:  make(map[string][]string),
-		gvr:           definition.GVR,
-		convert:       definition.ConvertFunc,
-		handler:       resources.NewHandler(definition),
-		stateManager:  stateManager,
-		dynamicClient: dynamicClient,
-		clientset:     clientset,
+func New(definition *resources.ResourceDefinition, stateManager *state.Manager, informer cache.SharedIndexInformer, clientset kubernetes.Interface, cfg *config.Config) *Controller {
+	c := &Controller{
+		resourceKeys: make(map[string][]string),
+		gvr:          definition.GVR,
+		convert:      definition.ConvertFunc,
+		handler:      resources.NewHandler(definition),
+		stateManager: stateManager,
+		informer:     informer,
+		clientset:    clientset,
+		cfg:          cfg,
 	}
+	c.ctx.Store(context.Background())
+
+	if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    c.onAdd,
+		UpdateFunc: c.onUpdate,
+		DeleteFunc: c.onDelete,
+	}); err != nil {
+		slog.Error("failed to register informer event handler", "resource", definition.GVR.Resource, "error", err)
+	}
+
+	return c
 }
 
-func (c *Controller) Run(ctx context.Context, cfg *config.Config) error {
-	if err := c.initialList(ctx, cfg); err != nil {
-		return fmt.Errorf("initial list failed for %s: %w", c.gvr.Resource, err)
+func (c *Controller) Run(ctx context.Context) error {
+	c.ctx.Store(ctx)
+
+	if !cache.WaitForCacheSync(ctx.Done(), c.informer.HasSynced) {
+		return fmt.Errorf("cache sync timed out for %s", c.gvr.Resource)
 	}
 
-	for {
-		if err := c.watchLoop(ctx, cfg); err != nil {
-			slog.Error("watch loop error", "resource", c.gvr.Resource, "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(5 * time.Second):
-		}
-	}
-}
+	c.stateManager.ForceWrite()
+	c.synced.Store(true)
 
-func (c *Controller) initialList(ctx context.Context, cfg *config.Config) error {
-	list, err := c.dynamicClient.Resource(c.gvr).Namespace(cfg.Namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return fmt.Errorf("list %s: %w", c.gvr.Resource, err)
-	}
-
-	changed := false
-	for _, item := range list.Items {
-		obj, err := c.convert(&item)
-		if err != nil {
-			slog.Error("failed to convert resource", "resource", c.gvr.Resource, "error", err)
-			continue
-		}
-		if c.processObject(ctx, cfg, obj, false) {
-			changed = true
-		}
-	}
-
-	if changed {
-		c.stateManager.ForceWrite()
-	}
-
+	<-ctx.Done()
 	return nil
 }
 
-func (c *Controller) watchLoop(ctx context.Context, cfg *config.Config) error {
-	w, err := c.dynamicClient.Resource(c.gvr).Namespace(cfg.Namespace).Watch(ctx, metav1.ListOptions{})
+func (c *Controller) onAdd(obj interface{}) {
+	metaObj, err := c.toMetaObj(obj)
 	if err != nil {
-		return fmt.Errorf("watch %s: %w", c.gvr.Resource, err)
-	}
-	defer w.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case evt, ok := <-w.ResultChan():
-			if !ok {
-				return fmt.Errorf("watch channel closed")
-			}
-			c.processEvent(ctx, cfg, evt)
-		}
-	}
-}
-
-func (c *Controller) processEvent(ctx context.Context, cfg *config.Config, evt watch.Event) {
-	if evt.Type == watch.Bookmark {
+		slog.Error("onAdd: failed to convert object", "resource", c.gvr.Resource, "error", err)
 		return
 	}
-	obj, err := c.convertEvent(evt)
-	if err != nil {
-		slog.Error("failed to process event", "resource", c.gvr.Resource, "error", err)
-		return
-	}
-	c.handleEvent(ctx, cfg, obj, evt.Type)
+	ctx := c.ctx.Load().(context.Context)
+	c.processObject(ctx, metaObj, c.synced.Load())
 }
 
-func (c *Controller) convertEvent(evt watch.Event) (metav1.Object, error) {
-	unstructuredObj, ok := evt.Object.(*unstructured.Unstructured)
+func (c *Controller) onUpdate(_ interface{}, newObj interface{}) {
+	metaObj, err := c.toMetaObj(newObj)
+	if err != nil {
+		slog.Error("onUpdate: failed to convert object", "resource", c.gvr.Resource, "error", err)
+		return
+	}
+	ctx := c.ctx.Load().(context.Context)
+	c.processObject(ctx, metaObj, c.synced.Load())
+}
+
+func (c *Controller) onDelete(obj interface{}) {
+	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = tombstone.Obj
+	}
+	metaObj, err := c.toMetaObj(obj)
+	if err != nil {
+		slog.Error("onDelete: failed to convert object", "resource", c.gvr.Resource, "error", err)
+		return
+	}
+	objKey := fmt.Sprintf("%s/%s", metaObj.GetNamespace(), metaObj.GetName())
+	c.removeObject(objKey)
+}
+
+func (c *Controller) toMetaObj(obj interface{}) (metav1.Object, error) {
+	u, ok := obj.(*unstructured.Unstructured)
 	if !ok {
-		return nil, fmt.Errorf("unexpected object type: %T", evt.Object)
+		return nil, fmt.Errorf("unexpected object type: %T", obj)
 	}
-	return c.convert(unstructuredObj)
+	return c.convert(u)
 }
 
-func (c *Controller) handleEvent(ctx context.Context, cfg *config.Config, obj metav1.Object, eventType watch.EventType) {
-	objKey := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
-
-	if eventType == watch.Deleted {
-		c.removeObject(objKey)
-		return
-	}
-
-	c.processObject(ctx, cfg, obj, true)
-}
-
-// resolveAuthSecret fetches the K8s Secret named by the {prefix}/auth-secret annotation.
-// Returns nil when the annotation is absent or the Secret cannot be retrieved.
-func (c *Controller) resolveAuthSecret(ctx context.Context, obj metav1.Object, cfg *config.Config) map[string]string {
-	secretName := obj.GetAnnotations()[cfg.AnnotationPrefix+"/auth-secret"]
+func (c *Controller) resolveAuthSecret(ctx context.Context, obj metav1.Object) map[string]string {
+	secretName := obj.GetAnnotations()[c.cfg.AnnotationPrefix+"/auth-secret"]
 	if secretName == "" {
 		return nil
 	}
@@ -155,16 +130,16 @@ func (c *Controller) resolveAuthSecret(ctx context.Context, obj metav1.Object, c
 }
 
 // processObject returns true when any change was detected.
-func (c *Controller) processObject(ctx context.Context, cfg *config.Config, obj metav1.Object, write bool) bool {
+func (c *Controller) processObject(ctx context.Context, obj metav1.Object, write bool) bool {
 	objKey := fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 
-	if !c.handler.ShouldProcess(obj, cfg) {
+	if !c.handler.ShouldProcess(obj, c.cfg) {
 		c.removeObject(objKey)
 		return false
 	}
 
-	secretData := c.resolveAuthSecret(ctx, obj, cfg)
-	entries := c.handler.BuildEntries(ctx, obj, secretData, cfg)
+	secretData := c.resolveAuthSecret(ctx, obj)
+	entries := c.handler.BuildEntries(ctx, obj, secretData, c.cfg)
 	if len(entries) == 0 {
 		c.removeObject(objKey)
 		return false
@@ -204,6 +179,10 @@ func (c *Controller) processObject(ctx context.Context, cfg *config.Config, obj 
 	}
 
 	return changed
+}
+
+func (c *Controller) GVRString() string {
+	return c.gvr.Resource
 }
 
 func (c *Controller) removeObject(objKey string) {

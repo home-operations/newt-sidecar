@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/home-operations/newt-sidecar/internal/blueprint"
 	"github.com/home-operations/newt-sidecar/internal/state"
@@ -150,6 +151,44 @@ func TestManager_NoWriteOnNoChange(t *testing.T) {
 	if string(data1) != string(data2) {
 		t.Error("File should not change when resource is unchanged")
 	}
+}
+
+func TestManager_WriteHealthy(t *testing.T) {
+	t.Run("healthy before any write (grace period)", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		m := state.NewManager(filepath.Join(tmpDir, "blueprint.yaml"))
+		if !m.WriteHealthy(10 * time.Minute) {
+			t.Error("WriteHealthy should return true before any write attempt")
+		}
+	})
+
+	t.Run("healthy after successful write within threshold", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		m := state.NewManager(filepath.Join(tmpDir, "blueprint.yaml"))
+		m.ForceWrite()
+		if !m.WriteHealthy(10 * time.Minute) {
+			t.Error("WriteHealthy should return true immediately after a successful write")
+		}
+	})
+
+	t.Run("unhealthy after threshold exceeded", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		m := state.NewManager(filepath.Join(tmpDir, "blueprint.yaml"))
+		m.ForceWrite()
+		// Use a threshold of 0 to simulate expiry.
+		if m.WriteHealthy(0) {
+			t.Error("WriteHealthy should return false when threshold is exceeded")
+		}
+	})
+
+	t.Run("unhealthy after write error", func(t *testing.T) {
+		// Use a path that cannot be written to trigger a write error.
+		m := state.NewManager("/nonexistent-dir/blueprint.yaml")
+		m.ForceWrite()
+		if m.WriteHealthy(10 * time.Minute) {
+			t.Error("WriteHealthy should return false after a write error")
+		}
+	})
 }
 
 func TestManager_ConcurrentOperations(t *testing.T) {

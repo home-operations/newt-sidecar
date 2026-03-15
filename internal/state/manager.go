@@ -5,6 +5,7 @@ import (
 	"os"
 	"reflect"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -13,9 +14,11 @@ import (
 
 // Manager maintains the global state of all blueprint resources.
 type Manager struct {
-	mu         sync.Mutex
-	resources  map[string]blueprint.Resource
-	outputFile string
+	mu            sync.Mutex
+	resources     map[string]blueprint.Resource
+	outputFile    string
+	lastWriteErr  error
+	lastWriteTime time.Time
 }
 
 // NewManager creates a new state manager.
@@ -67,6 +70,22 @@ func (m *Manager) ForceWrite() {
 	m.writeState()
 }
 
+// WriteHealthy returns false if the last write failed, true if no write has
+// been attempted yet (startup grace period), or true if the last successful
+// write is within threshold.
+func (m *Manager) WriteHealthy(threshold time.Duration) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.lastWriteErr != nil {
+		return false
+	}
+	if m.lastWriteTime.IsZero() {
+		return true
+	}
+	return time.Since(m.lastWriteTime) <= threshold
+}
+
 // writeState writes the current state to disk (must be called with mutex held).
 func (m *Manager) writeState() {
 	bp := blueprint.Blueprint{
@@ -76,20 +95,25 @@ func (m *Manager) writeState() {
 	yamlData, err := yaml.Marshal(bp)
 	if err != nil {
 		slog.Error("failed to marshal blueprint to yaml", "error", err)
+		m.lastWriteErr = err
 		return
 	}
 
 	tmp := m.outputFile + ".tmp"
 	if err := os.WriteFile(tmp, yamlData, 0o644); err != nil {
 		slog.Error("failed to write blueprint to temp file", "error", err)
+		m.lastWriteErr = err
 		return
 	}
 
 	if err := os.Rename(tmp, m.outputFile); err != nil {
 		slog.Error("failed to rename blueprint temp file", "error", err)
 		_ = os.Remove(tmp)
+		m.lastWriteErr = err
 		return
 	}
 
+	m.lastWriteErr = nil
+	m.lastWriteTime = time.Now()
 	slog.Info("wrote blueprint file", "file", m.outputFile, "resources", len(m.resources))
 }

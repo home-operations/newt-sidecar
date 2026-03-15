@@ -1,6 +1,9 @@
 package config
 
-import "flag"
+import (
+	"flag"
+	"fmt"
+)
 
 // Config holds all runtime configuration loaded from CLI flags.
 type Config struct {
@@ -29,6 +32,9 @@ type Config struct {
 	AuthSSOUsers       string
 	AuthSSOIDP         int
 	AuthWhitelistUsers string
+
+	// Health server port (0 = disabled)
+	HealthPort int
 }
 
 // Load parses CLI flags and returns a populated Config.
@@ -56,14 +62,29 @@ func Load() *Config {
 	flag.BoolVar(&cfg.AllPorts, "all-ports", false, "Expose all TCP/UDP ports of a Service as individual blueprint entries")
 
 	// SSO auth flags (cluster-wide defaults; per-resource annotation always wins).
-	// There is deliberately no --auth-sso flag: SSO must be enabled explicitly
-	// per resource via the newt-sidecar/auth-sso annotation.
+	// There is deliberately no --auth-sso flag: SSO must be enabled per resource
+	// via the newt-sidecar/auth-sso annotation.
 	flag.StringVar(&cfg.AuthSSORoles, "auth-sso-roles", "", "Default comma-separated Pangolin roles for SSO-enabled resources (empty = none)")
 	flag.StringVar(&cfg.AuthSSOUsers, "auth-sso-users", "", "Default comma-separated user e-mails for SSO-enabled resources (empty = none)")
 	flag.IntVar(&cfg.AuthSSOIDP, "auth-sso-idp", 0, "Default Pangolin IdP ID for auto-login-idp (0 = not set)")
 	flag.StringVar(&cfg.AuthWhitelistUsers, "auth-whitelist-users", "", "Default comma-separated user e-mails for whitelist-users (empty = none)")
 
+	flag.IntVar(&cfg.HealthPort, "health-port", 8080, "Port for the health/readiness HTTP server (0 = disabled)")
+
 	flag.Parse()
 
 	return cfg
+}
+
+func (c *Config) Validate() error {
+	if c.SiteID == "" {
+		return fmt.Errorf("--site-id is required")
+	}
+	if c.GatewayName != "" && c.TargetHostname == "" {
+		return fmt.Errorf("--target-hostname is required when --gateway-name is set")
+	}
+	if c.GatewayName == "" && !c.EnableService && !c.AutoService {
+		return fmt.Errorf("at least one of --gateway-name, --enable-service, or --auto-service must be set")
+	}
+	return nil
 }

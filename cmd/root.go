@@ -7,13 +7,16 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/home-operations/newt-sidecar/internal/config"
 	"github.com/home-operations/newt-sidecar/internal/controller"
+	"github.com/home-operations/newt-sidecar/internal/health"
 	"github.com/home-operations/newt-sidecar/internal/resources/httproute"
 	"github.com/home-operations/newt-sidecar/internal/resources/service"
 	"github.com/home-operations/newt-sidecar/internal/state"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -21,6 +24,11 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		slog.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -44,27 +52,49 @@ func main() {
 
 	stateManager := state.NewManager(cfg.Output)
 
-	// errCh collects fatal errors from controllers so main can exit cleanly.
-	errCh := make(chan error, 2)
-
-	// HTTPRoute controller — only started when a gateway is configured.
-	if cfg.GatewayName != "" {
-		ctrl := controller.New(httproute.Definition(), stateManager, dc, clientset)
-		go func() {
-			if err := ctrl.Run(ctx, cfg); err != nil {
-				errCh <- fmt.Errorf("httproute controller: %w", err)
-			}
-		}()
+	if cfg.HealthPort != 0 {
+		go health.Serve(cfg.HealthPort, stateManager)
 	}
 
-	// Service controller — started when --enable-service or --auto-service is set.
+	stopCh := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(stopCh)
+	}()
+
+	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(dc, 5*time.Minute, cfg.Namespace, nil)
+
+	var controllers []*controller.Controller
+
+	if cfg.GatewayName != "" {
+		def := httproute.Definition()
+		informer := factory.ForResource(def.GVR).Informer()
+		ctrl := controller.New(def, stateManager, informer, clientset, cfg)
+		controllers = append(controllers, ctrl)
+	}
+
 	if cfg.EnableService || cfg.AutoService {
-		ctrl := controller.New(service.Definition(), stateManager, dc, clientset)
-		go func() {
-			if err := ctrl.Run(ctx, cfg); err != nil {
-				errCh <- fmt.Errorf("service controller: %w", err)
+		def := service.Definition()
+		informer := factory.ForResource(def.GVR).Informer()
+		ctrl := controller.New(def, stateManager, informer, clientset, cfg)
+		controllers = append(controllers, ctrl)
+	}
+
+	factory.Start(stopCh)
+	for gvr, ok := range factory.WaitForCacheSync(stopCh) {
+		if !ok {
+			slog.Error("informer cache sync failed", "resource", gvr.Resource)
+			os.Exit(1)
+		}
+	}
+
+	errCh := make(chan error, len(controllers))
+	for _, ctrl := range controllers {
+		go func(c *controller.Controller) {
+			if err := c.Run(ctx); err != nil {
+				errCh <- fmt.Errorf("controller (%s): %w", c.GVRString(), err)
 			}
-		}()
+		}(ctrl)
 	}
 
 	select {
