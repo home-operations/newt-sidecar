@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/home-operations/newt-sidecar/compare/0.1.1...0.1.2) (2026-03-15)
+
+
+### Bug Fixes
+
+* replace atomic.Value with RWMutex for context storage in controller ([fba38e8](https://github.com/home-operations/newt-sidecar/commit/fba38e81462b82ff5a78b9f2bed902247a623f73))
+
 ## [0.1.1](https://github.com/home-operations/newt-sidecar/compare/0.1.0...0.1.1) (2026-03-15)
 
 
