@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/home-operations/newt-sidecar/compare/0.1.2...0.2.0) (2026-03-19)
+
+
+### Features
+
+* Allow reading configuration from environment variables ([0f0dbd7](https://github.com/home-operations/newt-sidecar/commit/0f0dbd730a2ad75a13c5507cc3f08820dd9dbc0d))
+
 ## [0.1.2](https://github.com/home-operations/newt-sidecar/compare/0.1.1...0.1.2) (2026-03-15)
 
 
