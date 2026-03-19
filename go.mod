@@ -3,6 +3,7 @@ module github.com/home-operations/newt-sidecar
 go 1.26
 
 require (
+	github.com/caarlos0/env/v11 v11.4.0
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.35.2
 	k8s.io/apimachinery v0.35.2

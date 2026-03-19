@@ -23,6 +23,8 @@ The sidecar runs alongside newt in the same pod, sharing a volume. It watches HT
 
 ## Flags
 
+Every flag can also be set via an environment variable with the `NEWTSC_` prefix. For example, `--site-id` becomes `NEWTSC_SITE_ID`. CLI flags take precedence over environment variables.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--gateway-name` | `""` | Gateway name to filter HTTPRoutes. When omitted the HTTPRoute controller is disabled |
