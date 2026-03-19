@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/home-operations/newt-sidecar/compare/0.2.0...0.2.1) (2026-03-19)
+
+
+### Bug Fixes
+
+* **deps:** update kubernetes packages (v0.35.2 → v0.35.3) ([#14](https://github.com/home-operations/newt-sidecar/issues/14)) ([3040f0c](https://github.com/home-operations/newt-sidecar/commit/3040f0ce51de054549d5d4fb749748c5493a3316))
+
 ## [0.2.0](https://github.com/home-operations/newt-sidecar/compare/0.1.2...0.2.0) (2026-03-19)
 
 
