@@ -14,18 +14,20 @@ import (
 
 // Manager maintains the global state of all blueprint resources.
 type Manager struct {
-	mu            sync.Mutex
-	resources     map[string]blueprint.Resource
-	outputFile    string
-	lastWriteErr  error
-	lastWriteTime time.Time
+	mu               sync.Mutex
+	resources        map[string]blueprint.Resource
+	privateResources map[string]blueprint.PrivateResource
+	outputFile       string
+	lastWriteErr     error
+	lastWriteTime    time.Time
 }
 
 // NewManager creates a new state manager.
 func NewManager(outputFile string) *Manager {
 	return &Manager{
-		resources:  make(map[string]blueprint.Resource),
-		outputFile: outputFile,
+		resources:        make(map[string]blueprint.Resource),
+		privateResources: make(map[string]blueprint.PrivateResource),
+		outputFile:       outputFile,
 	}
 }
 
@@ -45,6 +47,40 @@ func (m *Manager) AddOrUpdate(key string, r blueprint.Resource, write bool) bool
 		m.writeState()
 	}
 
+	return true
+}
+
+// AddOrUpdatePrivate adds or updates a private resource and writes state if changed.
+func (m *Manager) AddOrUpdatePrivate(key string, r blueprint.PrivateResource, write bool) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	existing, exists := m.privateResources[key]
+	if exists && reflect.DeepEqual(existing, r) {
+		return false
+	}
+
+	m.privateResources[key] = r
+
+	if write {
+		m.writeState()
+	}
+
+	return true
+}
+
+// RemovePrivate removes a private resource and writes state if changed.
+func (m *Manager) RemovePrivate(key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	_, exists := m.privateResources[key]
+	if !exists {
+		return false
+	}
+
+	delete(m.privateResources, key)
+	m.writeState()
 	return true
 }
 
@@ -89,7 +125,8 @@ func (m *Manager) WriteHealthy(threshold time.Duration) bool {
 // writeState writes the current state to disk (must be called with mutex held).
 func (m *Manager) writeState() {
 	bp := blueprint.Blueprint{
-		PublicResources: m.resources,
+		PublicResources:  m.resources,
+		PrivateResources: m.privateResources,
 	}
 
 	yamlData, err := yaml.Marshal(bp)
@@ -115,5 +152,5 @@ func (m *Manager) writeState() {
 
 	m.lastWriteErr = nil
 	m.lastWriteTime = time.Now()
-	slog.Info("wrote blueprint file", "file", m.outputFile, "resources", len(m.resources))
+	slog.Info("wrote blueprint file", "file", m.outputFile, "resources", len(m.resources), "private-resources", len(m.privateResources))
 }

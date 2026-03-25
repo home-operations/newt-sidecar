@@ -1,0 +1,368 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: publicresources.newt-sidecar.home-operations.com
+spec:
+  group: newt-sidecar.home-operations.com
+  names:
+    kind: PublicResource
+    listKind: PublicResourceList
+    plural: publicresources
+    shortNames:
+    - pubr
+    singular: publicresource
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.protocol
+      name: Protocol
+      type: string
+    - jsonPath: .spec.fullDomain
+      name: Domain
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PublicResource is the Schema for Pangolin public-resources.
+          Each instance produces one entry in the blueprint's public-resources block.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PublicResourceSpec defines the desired state of a Pangolin public-resource.
+              Each CR produces one entry in the blueprint's public-resources block.
+            properties:
+              auth:
+                description: Auth configures authentication for this resource (http
+                  only).
+                properties:
+                  authSecretRef:
+                    description: |-
+                      AuthSecretRef is the name of a Kubernetes Secret in the same namespace containing
+                      sensitive auth values. Well-known keys: pincode, password, basic-auth-user, basic-auth-password.
+                    type: string
+                  autoLoginIdp:
+                    description: AutoLoginIdp is the Pangolin IdP ID for auto-login.
+                      0 means not set.
+                    type: integer
+                  ssoEnabled:
+                    default: false
+                    description: SsoEnabled enables Pangolin SSO authentication.
+                    type: boolean
+                  ssoRoles:
+                    description: |-
+                      SsoRoles restricts access to users that have one of these Pangolin roles.
+                      Must not include "Admin".
+                    items:
+                      type: string
+                    type: array
+                  ssoUsers:
+                    description: SsoUsers restricts access to these Pangolin user
+                      email addresses (SSO).
+                    items:
+                      type: string
+                    type: array
+                  whitelistUsers:
+                    description: WhitelistUsers allows only these Pangolin user email
+                      addresses.
+                    items:
+                      type: string
+                    type: array
+                type: object
+              enabled:
+                description: Enabled controls whether this resource is active.
+                type: boolean
+              fullDomain:
+                description: FullDomain is the public domain to expose (required for
+                  http protocol).
+                type: string
+              headers:
+                description: Headers are extra HTTP headers to pass to Pangolin.
+                items:
+                  description: PublicHeaderSpec defines a custom HTTP header.
+                  properties:
+                    name:
+                      description: Name is the header name.
+                      minLength: 1
+                      type: string
+                    value:
+                      description: Value is the header value.
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  - value
+                  type: object
+                type: array
+              hostHeader:
+                description: HostHeader sets a custom Host header on the Pangolin
+                  resource.
+                type: string
+              maintenance:
+                description: Maintenance configures the maintenance page (Enterprise
+                  Edition only).
+                properties:
+                  enabled:
+                    description: Enabled activates the maintenance page.
+                    type: boolean
+                  estimatedTime:
+                    description: EstimatedTime is the estimated maintenance duration
+                      (max 100 characters).
+                    maxLength: 100
+                    type: string
+                  message:
+                    description: Message is the maintenance page message (max 2000
+                      characters).
+                    maxLength: 2000
+                    type: string
+                  title:
+                    description: Title is the maintenance page title (max 255 characters).
+                    maxLength: 255
+                    type: string
+                  type:
+                    description: 'Type is the maintenance type: forced or automatic.'
+                    enum:
+                    - forced
+                    - automatic
+                    type: string
+                required:
+                - enabled
+                type: object
+              name:
+                description: Name is the display name of the resource in Pangolin.
+                maxLength: 255
+                minLength: 1
+                type: string
+              protocol:
+                description: Protocol is the resource protocol.
+                enum:
+                - http
+                - tcp
+                - udp
+                type: string
+              proxyPort:
+                description: ProxyPort is the Pangolin-side port (required for tcp/udp
+                  protocol).
+                maximum: 65535
+                minimum: 1
+                type: integer
+              rules:
+                description: Rules are access control rules applied to this resource
+                  (http only).
+                items:
+                  description: PublicRuleSpec defines an access control rule.
+                  properties:
+                    action:
+                      description: Action is the rule action.
+                      enum:
+                      - allow
+                      - deny
+                      - pass
+                      type: string
+                    match:
+                      description: Match is the attribute to match against.
+                      enum:
+                      - ip
+                      - cidr
+                      - path
+                      - country
+                      type: string
+                    priority:
+                      description: Priority controls evaluation order (lower = higher
+                        priority). Defaults to 100.
+                      maximum: 1000
+                      minimum: 1
+                      type: integer
+                    value:
+                      description: Value is the match value (IP, CIDR, path pattern,
+                        or 2-letter country code).
+                      minLength: 1
+                      type: string
+                  required:
+                  - action
+                  - match
+                  - value
+                  type: object
+                type: array
+              ssl:
+                default: true
+                description: Ssl enables SSL on the Pangolin resource.
+                type: boolean
+              targets:
+                description: Targets are the backend targets for this resource.
+                items:
+                  description: PublicTargetSpec defines a backend target for a public
+                    resource.
+                  properties:
+                    enabled:
+                      default: true
+                      description: Enabled controls whether this target is active.
+                      type: boolean
+                    healthcheck:
+                      description: Healthcheck is the health check configuration for
+                        this target.
+                      properties:
+                        enabled:
+                          default: true
+                          description: Enabled controls whether health checking is
+                            active.
+                          type: boolean
+                        followRedirects:
+                          description: 'FollowRedirects controls whether to follow
+                            HTTP redirects (default: true).'
+                          type: boolean
+                        headers:
+                          description: Headers are extra HTTP headers to include in
+                            the health check request.
+                          items:
+                            description: PublicHeaderSpec defines a custom HTTP header.
+                            properties:
+                              name:
+                                description: Name is the header name.
+                                minLength: 1
+                                type: string
+                              value:
+                                description: Value is the header value.
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            - value
+                            type: object
+                          type: array
+                        hostname:
+                          description: Hostname is the hostname to health-check.
+                          type: string
+                        interval:
+                          description: 'Interval is the seconds between health checks
+                            (default: 30).'
+                          minimum: 1
+                          type: integer
+                        method:
+                          description: 'Method is the HTTP method to use (default:
+                            GET).'
+                          type: string
+                        mode:
+                          description: 'Mode is the health check mode (default: http).'
+                          type: string
+                        path:
+                          description: Path is the HTTP path to request.
+                          type: string
+                        port:
+                          description: Port is the port to health-check.
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        scheme:
+                          description: Scheme is the protocol scheme.
+                          type: string
+                        status:
+                          description: Status is the expected HTTP status code.
+                          type: integer
+                        timeout:
+                          description: 'Timeout is the health check timeout in seconds
+                            (default: 5).'
+                          minimum: 1
+                          type: integer
+                        unhealthyInterval:
+                          description: 'UnhealthyInterval is the seconds between checks
+                            when unhealthy (default: 30).'
+                          minimum: 1
+                          type: integer
+                      required:
+                      - hostname
+                      - port
+                      type: object
+                    hostname:
+                      description: Hostname is the backend hostname.
+                      type: string
+                    internalPort:
+                      description: InternalPort is an internal port mapping on the
+                        target.
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    method:
+                      description: Method is the internal protocol to reach the backend
+                        (required for http resources).
+                      enum:
+                      - http
+                      - https
+                      - h2c
+                      type: string
+                    path:
+                      description: Path is the URL path or pattern for this target.
+                      type: string
+                    pathMatch:
+                      description: PathMatch is the path matching type.
+                      enum:
+                      - prefix
+                      - exact
+                      - regex
+                      type: string
+                    port:
+                      description: Port is the backend port.
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    priority:
+                      description: Priority is the load-balancing priority (1–1000,
+                        default 100).
+                      maximum: 1000
+                      minimum: 1
+                      type: integer
+                    rewriteMatch:
+                      description: RewriteMatch is the rewrite match type.
+                      enum:
+                      - exact
+                      - prefix
+                      - regex
+                      - stripPrefix
+                      type: string
+                    rewritePath:
+                      description: RewritePath is the path to rewrite the request
+                        to.
+                      type: string
+                  required:
+                  - hostname
+                  - port
+                  type: object
+                minItems: 1
+                type: array
+              tlsServerName:
+                description: |-
+                  TlsServerName overrides the SNI name for the backend TLS connection.
+                  Defaults to FullDomain when empty.
+                type: string
+            required:
+            - name
+            - protocol
+            - targets
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

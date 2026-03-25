@@ -1,0 +1,27 @@
+---
+# ClusterRole granting read access to newt-sidecar CRDs.
+# Bind this to the ServiceAccount of your newt-sidecar deployment so it can
+# watch PublicResource and PrivateResource objects.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: newt-sidecar-crd-viewer
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+rules:
+  - apiGroups:
+      - newt-sidecar.home-operations.com
+    resources:
+      - publicresources
+      - privateresources
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
