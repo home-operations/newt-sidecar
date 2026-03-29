@@ -225,11 +225,83 @@ annotations:
 
 The `{prefix}/rules` annotation is merged with the `--deny-countries` flag rules: annotation rules come first, then country-deny rules are appended.
 
-## Private resources
+## Private and public resources via CRD
 
-The Pangolin blueprint supports a `private-resources` block for Pangolin client access (SSH, RDP, CIDR tunnels). The data types are fully defined in the sidecar's blueprint package and will be serialised correctly if populated, but **private resources are not auto-generated from Kubernetes resource annotations**. There is no standard Kubernetes resource type that maps cleanly to a Pangolin private resource.
+Both resource types — private (Pangolin client access: SSH, RDP, CIDR tunnels) and public (static HTTP tunnel entries) — can be defined as native Kubernetes resources using the CRDs shipped in the `newt-sidecar` Helm chart. The sidecar watches these cluster-wide and merges them into the generated blueprint.
 
-To include private resources in the generated blueprint you would need a separate input mechanism (e.g. a ConfigMap or custom controller) that is out of scope for the current annotation-driven approach.
+The CRDs are installed via the `newt-sidecar` Helm chart (see [Kubernetes deployment](#kubernetes-deployment)).
+
+### PrivateResource
+
+```yaml
+apiVersion: newt-sidecar.home-operations.com/v1alpha1
+kind: PrivateResource
+metadata:
+  name: cluster-pods
+  namespace: network
+spec:
+  name: Cluster Pod Network
+  mode: cidr
+  destination: 10.42.0.0/16
+```
+
+**Spec fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Display name in Pangolin |
+| `mode` | string | Tunnel mode: `cidr`, `hostname`, etc. |
+| `destination` | string | CIDR block or hostname to tunnel |
+| `site` | string | Site ID override (defaults to `--site-id`) |
+| `tcp-ports` | string | TCP port range to expose |
+| `udp-ports` | string | UDP port range to expose |
+| `disable-icmp` | bool | Disable ICMP forwarding |
+| `alias` | string | Alias for the resource |
+| `roles` | []string | Pangolin roles with access |
+| `users` | []string | User e-mails with access |
+| `machines` | []string | Machine IDs with access |
+
+### PublicResource
+
+`PublicResource` lets you define static public tunnel entries without an HTTPRoute or Service annotation. It maps directly to the Pangolin `public-resources` blueprint block and supports both HTTP and TCP/UDP resources — the same fields as annotation-driven resources.
+
+TCP tunnel example (e.g. SSH):
+
+```yaml
+apiVersion: newt-sidecar.home-operations.com/v1alpha1
+kind: PublicResource
+metadata:
+  name: forgejo-ssh
+  namespace: selfhosted
+spec:
+  name: Forgejo SSH
+  protocol: tcp
+  proxyPort: 2222
+  ssl: false
+  targets:
+    - hostname: envoy-external.network.svc.cluster.local
+      port: 2222
+```
+
+HTTP tunnel example:
+
+```yaml
+apiVersion: newt-sidecar.home-operations.com/v1alpha1
+kind: PublicResource
+metadata:
+  name: my-static-app
+  namespace: network
+spec:
+  name: My Static App
+  full-domain: app.example.com
+  ssl: true
+  targets:
+    - hostname: app.default.svc.cluster.local
+      method: http
+      port: 8080
+```
+
+This is useful for resources with no gateway HTTPRoute — for example raw TCP/UDP ports, services in namespaces you do not watch for HTTPRoutes, or entries you want to manage independently of HTTPRoute lifecycle.
 
 ## Auth via Kubernetes Secret
 
@@ -265,29 +337,109 @@ annotations:
 
 The Secret may contain any subset of the well-known keys. Keys that are absent or empty are ignored.
 
-> **RBAC**: the sidecar's ServiceAccount needs `get` on `secrets` in each watched namespace when `auth-secret` is used. See the [RBAC example](#helmrelease-httproute--auth-secret) below.
+> **RBAC**: the sidecar's ServiceAccount needs `get` on `secrets` in each watched namespace when `auth-secret` is used. See [auth-secret RBAC](#auth-secret-rbac) below.
 
 ## Kubernetes deployment
 
-Deploy using the [bjw-s app-template](https://bjw-s-labs.github.io/helm-charts/docs/app-template/) chart. The sidecar runs as a native Kubernetes sidecar (`initContainer` with `restartPolicy: Always`, requires K8s 1.29+). An `emptyDir` volume is shared between the sidecar and newt at `/etc/newt`.
+Deploy using the dedicated [newt Helm chart](https://github.com/fosrl/helm-charts). The sidecar runs as a native Kubernetes sidecar (`initContainer` with `restartPolicy: Always`, requires K8s 1.29+). An `emptyDir` volume is shared between the sidecar and newt at `/etc/newt`. A `wait-blueprint` init container blocks newt from starting until the sidecar has written the blueprint.
 
-### OCIRepository
+### Step 1 — Install CRDs
+
+The `PrivateResource` and `PublicResource` CRDs are shipped in a separate `newt-sidecar` chart. Install it before the main deployment.
 
 ```yaml
-apiVersion: source.toolkit.fluxcd.io/v1beta2
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: newt-sidecar
+spec:
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 0.2.1
+  url: oci://ghcr.io/home-operations/charts/newt-sidecar
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: newt-sidecar-crds
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: newt-sidecar
+  interval: 1h
+```
+
+### Step 2 — RBAC
+
+The `newt` chart does not yet support custom RBAC rules, so create a ClusterRole manually. Grant access to all resource types the sidecar needs to watch:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: newt-httproute-reader
+rules:
+  - apiGroups:
+      - gateway.networking.k8s.io
+    resources:
+      - httproutes
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - newt-sidecar.home-operations.com
+    resources:
+      - privateresources
+      - publicresources
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: newt-httproute-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: newt-httproute-reader
+subjects:
+  - kind: ServiceAccount
+    name: newt
+    namespace: <your-namespace>
+```
+
+Remove `httproutes` or `services` from the rules if you are not using HTTPRoute or Service discovery respectively.
+
+### Step 3 — Deploy newt
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository
 metadata:
   name: newt
 spec:
-  interval: 1h
-  url: oci://ghcr.io/bjw-s-labs/helm/app-template
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
   ref:
-    tag: 4.6.2
-```
-
-### HelmRelease (HTTPRoute only)
-
-```yaml
+    tag: 1.2.0
+  url: oci://ghcr.io/home-operations/charts-mirror/newt
+---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -298,165 +450,102 @@ spec:
     name: newt
   interval: 1h
   values:
-    defaultPodOptions:
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-    controllers:
-      newt:
-        replicas: 2
+    global:
+      image:
+        # renovate: datasource=github-releases depName=fosrl/newt
+        tag: "1.10.3"
+
+    rbac:
+      clusterRole: true
+
+    serviceAccount:
+      automountServiceAccountToken: true
+      name: newt
+
+    newtInstances:
+      - name: main-tunnel
+        enabled: true
+        replicas: 1
+        auth:
+          existingSecretName: newt-secret
+        extraEnv:
+          BLUEPRINT_FILE: /etc/newt/blueprint.yaml
+        extraVolumeMounts:
+          - name: blueprint
+            mountPath: /etc/newt
+        extraVolumes:
+          - name: blueprint
+            emptyDir: {}
         initContainers:
-          newt-sidecar:
-            image:
-              repository: ghcr.io/home-operations/newt-sidecar
-              tag: latest
+          - name: newt-sidecar
+            image: ghcr.io/home-operations/newt-sidecar:latest
             args:
-              - --gateway-name=kgateway-external
-              - --site-id=<pangolin-site-id>
-              - --target-hostname=kgateway-external.network.svc.cluster.local
+              - --gateway-name=<your-gateway>
+              - --target-hostname=<gateway-svc>.<namespace>.svc.cluster.local
               - --deny-countries=RU,CN,KP,IR,BY,IL
+              - --enable-service
+            env:
+              - name: NEWTSC_SITE_ID
+                valueFrom:
+                  secretKeyRef:
+                    name: newt-secret
+                    key: NEWTSC_SITE_ID
             restartPolicy: Always
             resources:
               limits:
-                memory: 64Mi
-        containers:
-          app:
-            image:
-              repository: fosrl/newt
-              tag: 1.10.1
-            env:
-              PANGOLIN_ENDPOINT:
-                valueFrom:
-                  secretKeyRef:
-                    name: newt-secret
-                    key: NEWT_SERVER_URL
-              NEWT_ID:
-                valueFrom:
-                  secretKeyRef:
-                    name: newt-secret
-                    key: NEWT_ID
-              NEWT_SECRET:
-                valueFrom:
-                  secretKeyRef:
-                    name: newt-secret
-                    key: NEWT_SECRET
-              BLUEPRINT_FILE: /etc/newt/blueprint.yaml
-            securityContext:
-              allowPrivilegeEscalation: false
-              readOnlyRootFilesystem: true
-              capabilities: {drop: ["ALL"]}
+                memory: 128Mi
+            volumeMounts:
+              - name: blueprint
+                mountPath: /etc/newt
+          - name: wait-blueprint
+            image: busybox
+            command:
+              - /bin/sh
+              - -c
+              - until test -f /etc/newt/blueprint.yaml; do sleep 1; done
             resources:
               requests:
                 cpu: 10m
               limits:
-                memory: 256Mi
-    rbac:
-      roles:
-        newt:
-          type: ClusterRole
-          rules:
-            - apiGroups:
-                - gateway.networking.k8s.io
-              resources:
-                - httproutes
-              verbs:
-                - get
-                - watch
-                - list
-      bindings:
-        newt:
-          type: ClusterRoleBinding
-          roleRef:
-            identifier: newt
-          subjects:
-            - identifier: newt
-    serviceAccount:
-      newt: {}
-    persistence:
-      blueprint:
-        type: emptyDir
-        globalMounts:
-          - path: /etc/newt
+                memory: 16Mi
+            volumeMounts:
+              - name: blueprint
+                mountPath: /etc/newt
 ```
 
-### HelmRelease (HTTPRoute + Service discovery)
+The Pangolin site ID is read from the `NEWTSC_SITE_ID` environment variable (sourced from a Secret) and passed to the sidecar as `--site-id`.
 
-Add `--enable-service` (or `--auto-service`) to the sidecar args and extend the ClusterRole to include Services:
+### auth-secret RBAC
 
-```yaml
-args:
-  - --gateway-name=kgateway-external
-  - --site-id=<pangolin-site-id>
-  - --target-hostname=kgateway-external.network.svc.cluster.local
-  - --deny-countries=RU,CN,KP,IR,BY,IL
-  - --enable-service
-```
+When any resource uses `newt-sidecar/auth-secret`, add a Role in each watched namespace that grants `get` on Secrets, and bind it to the ServiceAccount:
 
 ```yaml
-rbac:
-  roles:
-    newt:
-      type: ClusterRole
-      rules:
-        - apiGroups:
-            - gateway.networking.k8s.io
-          resources:
-            - httproutes
-          verbs:
-            - get
-            - watch
-            - list
-        - apiGroups:
-            - ""
-          resources:
-            - services
-          verbs:
-            - get
-            - watch
-            - list
-```
-
-### HelmRelease (HTTPRoute + auth-secret)
-
-When any resource uses `newt-sidecar/auth-secret`, add a Role (not ClusterRole) in each watched namespace that grants `get` on Secrets, and bind it to the ServiceAccount:
-
-```yaml
-rbac:
-  roles:
-    newt:
-      type: ClusterRole
-      rules:
-        - apiGroups:
-            - gateway.networking.k8s.io
-          resources:
-            - httproutes
-          verbs:
-            - get
-            - watch
-            - list
-    newt-secrets:
-      type: Role
-      rules:
-        - apiGroups:
-            - ""
-          resources:
-            - secrets
-          verbs:
-            - get
-  bindings:
-    newt:
-      type: ClusterRoleBinding
-      roleRef:
-        identifier: newt
-      subjects:
-        - identifier: newt
-    newt-secrets:
-      type: RoleBinding
-      roleRef:
-        identifier: newt-secrets
-      subjects:
-        - identifier: newt
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: newt-secret-reader
+  namespace: <your-namespace>
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: newt-secret-reader
+  namespace: <your-namespace>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: newt-secret-reader
+subjects:
+  - kind: ServiceAccount
+    name: newt
+    namespace: <your-namespace>
 ```
 
 ### Service examples
