@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/home-operations/newt-sidecar/compare/0.2.1...0.2.2) (2026-03-30)
+
+
+### Documentation
+
+* update readme with crds ([2c8292c](https://github.com/home-operations/newt-sidecar/commit/2c8292c49c175e3215901319aecd4043b73c355b))
+
 ## [0.2.1](https://github.com/home-operations/newt-sidecar/compare/0.2.0...0.2.1) (2026-03-25)
 
 
